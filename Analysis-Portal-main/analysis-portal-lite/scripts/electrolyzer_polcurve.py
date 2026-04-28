@@ -1280,6 +1280,115 @@ def extract_losses_at_current(cycles, j_target, T_C=80.0,
     return cycle_nums, v_values, losses
 
 
+def compute_eis_loss_decomposition(cycles, eis_circuit_by_cycle, j_target,
+                                    T_C=80.0, p_cathode_barg=0.0,
+                                    p_anode_barg=0.0, geo_area=5.0):
+    """
+    Decompose polcurve losses using EIS circuit fit R0, R1, R2 values.
+
+    For each cycle that has current-dependent EIS circuit fits,
+    interpolates R0(j), R1(j), R2(j) at j_target and computes:
+      V_R0  = j × R0      (membrane ohmic)
+      V_R1  = j × R1      (HF arc / charge transfer)
+      V_CL  = j × [√(R1·R2)·coth(√(R2/R1)) - R1]  (CL ionic, transmission line)
+      V_kin = V - E_rev - V_R0 - V_R1 - V_CL  (kinetic / activation)
+
+    Parameters
+    ----------
+    cycles : list of polcurve cycles
+    eis_circuit_by_cycle : dict {cycle_idx: list of fit result dicts}
+    j_target : float — target current density for loss evaluation
+    T_C, p_cathode_barg, p_anode_barg : thermodynamic conditions
+    geo_area : float — cell area cm²
+
+    Returns
+    -------
+    cycle_nums, dep_values, losses  (same format as extract_losses_at_current)
+    losses keys: 'V_R0_mV', 'V_R1_mV', 'V_CL_mV', 'V_kinetic_mV'
+    """
+    E = E_rev(T_C, p_cathode_barg, p_anode_barg)
+
+    cycle_nums = []
+    dep_values = []
+    losses = {'V_R0_mV': [], 'V_R1_mV': [], 'V_CL_mV': [], 'V_kinetic_mV': []}
+
+    for ci, cyc in enumerate(cycles):
+        if ci not in eis_circuit_by_cycle:
+            continue
+
+        fits = eis_circuit_by_cycle[ci]
+        if len(fits) < 2:
+            continue
+
+        # Get j and R values from circuit fits
+        j_eis = np.array([f['j'] for f in fits if f.get('j') is not None])
+        R0_eis = np.array([f['R0_ohm'] for f in fits if f.get('j') is not None])
+        R1_eis = np.array([f['R1_ohm'] for f in fits if f.get('j') is not None])
+        R2_eis = np.array([f['R2_ohm'] for f in fits if f.get('j') is not None])
+
+        if len(j_eis) < 2:
+            continue
+
+        # Sort by j
+        order = np.argsort(j_eis)
+        j_eis = j_eis[order]
+        R0_eis = R0_eis[order]
+        R1_eis = R1_eis[order]
+        R2_eis = R2_eis[order]
+
+        # Check j_target is within range
+        if j_target < j_eis.min() or j_target > j_eis.max():
+            # Extrapolation — use nearest
+            if j_target < j_eis.min():
+                R0_j = R0_eis[0]
+                R1_j = R1_eis[0]
+                R2_j = R2_eis[0]
+            else:
+                R0_j = R0_eis[-1]
+                R1_j = R1_eis[-1]
+                R2_j = R2_eis[-1]
+        else:
+            R0_j = float(np.interp(j_target, j_eis, R0_eis))
+            R1_j = float(np.interp(j_target, j_eis, R1_eis))
+            R2_j = float(np.interp(j_target, j_eis, R2_eis))
+
+        # Compute voltage losses: V = j (A/cm²) × R (Ω) × A (cm²)
+        V_R0 = j_target * R0_j * geo_area
+        V_R1 = j_target * R1_j * geo_area
+        V_CL = j_target * coth_cl_ionic_only(R1_j, R2_j) * geo_area  # coth model
+
+        # Get V at j_target from polcurve data
+        j_arr = np.array([d['j'] for d in cyc])
+        V_arr = np.array([d['V'] for d in cyc])
+        order_v = np.argsort(j_arr)
+        j_sorted = j_arr[order_v]
+        V_sorted = V_arr[order_v]
+
+        if j_sorted.max() < j_target * 0.95:
+            continue
+
+        if j_sorted.min() <= j_target <= j_sorted.max():
+            V_at_j = float(np.interp(j_target, j_sorted, V_sorted))
+        else:
+            continue
+
+        V_kinetic = V_at_j - E - V_R0 - V_R1 - V_CL
+
+        cycle_nums.append(ci + 1)
+        dep_values.append(V_at_j)
+        losses['V_R0_mV'].append(V_R0 * 1000)
+        losses['V_R1_mV'].append(V_R1 * 1000)
+        losses['V_CL_mV'].append(V_CL * 1000)
+        losses['V_kinetic_mV'].append(V_kinetic * 1000)
+
+    losses = {k: np.array(v) for k, v in losses.items()}
+
+    if cycle_nums:
+        print(f"    EIS-based loss decomposition: {len(cycle_nums)} cycle(s)")
+
+    return cycle_nums, dep_values, losses
+
+
 def plot_v_and_losses_vs_cycle(cycle_nums, v_values, losses,
                                 j_target, save_path=None):
     """
@@ -1339,13 +1448,78 @@ def plot_v_and_losses_vs_cycle(cycle_nums, v_values, losses,
     return fig
 
 
+def plot_eis_losses_vs_cycle(cycle_nums, dep_values, losses,
+                              j_target=None, v_target=None, save_path=None):
+    """
+    Dual-axis: V (or j) at target (left) and EIS-decomposed losses (right).
+    Uses R0, R1, R2 from circuit fits instead of polcurve model.
+    """
+    fig, ax1 = plt.subplots(figsize=(10, 6), dpi=120)
+    ax2 = ax1.twinx()
+
+    if j_target is not None:
+        ax1.plot(cycle_nums, dep_values, 'o-', color='#1f77b4', ms=5, lw=1.5,
+                 label=f'V @ {j_target:.2f} A/cm²')
+        ax1.set_ylabel(f'Cell voltage at {j_target:.2f} A/cm²  [V]',
+                       fontsize=12, color='#1f77b4')
+        target_str = f'{j_target:.2f} A/cm²'
+    else:
+        ax1.plot(cycle_nums, dep_values, 'o-', color='#1f77b4', ms=5, lw=1.5,
+                 label=f'j @ {v_target:.2f} V')
+        ax1.set_ylabel(f'Current density at {v_target:.2f} V  [A/cm²]',
+                       fontsize=12, color='#1f77b4')
+        target_str = f'{v_target:.2f} V'
+
+    ax1.tick_params(axis='y', labelcolor='#1f77b4')
+    ax1.ticklabel_format(axis='y', useOffset=False)
+    ax1.set_xlim(left=0)
+    ax1.set_xlabel('Cycle number', fontsize=12)
+
+    loss_styles = [
+        ('V_R0_mV',       'R₀ (membrane)',         '#4CAF50', 's-'),
+        ('V_R1_mV',       'R₁ (charge transfer)',   '#FF5722', '^-'),
+        ('V_CL_mV',       'CL ionic (coth)',        '#FF9800', 'v-'),
+        ('V_kinetic_mV',  'Kinetic residual',       '#9C27B0', 'D-'),
+    ]
+
+    for key, label, color, fmt in loss_styles:
+        vals = losses.get(key)
+        if vals is not None and len(vals) > 0:
+            ax2.plot(cycle_nums, vals, fmt, color=color, ms=4, lw=1.2,
+                     label=label, alpha=0.85)
+
+    ax2.set_ylabel('Voltage loss  [mV]', fontsize=12)
+
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    fig.legend(lines1 + lines2, labels1 + labels2,
+               loc='lower center', bbox_to_anchor=(0.5, -0.02),
+               ncol=len(lines1) + len(lines2), fontsize=9,
+               frameon=True, fancybox=True)
+
+    ax1.grid(True, alpha=0.3)
+    ax1.set_title(f'EIS Loss Decomposition at {target_str} vs. Cycle',
+                  fontsize=12, fontweight='bold')
+
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.18)
+    if save_path:
+        fig.savefig(save_path, bbox_inches='tight')
+        print(f"  Plot saved: {save_path}")
+    else:
+        plt.show()
+    return fig
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  Data export
 # ═══════════════════════════════════════════════════════════════════
 
 def export_excel(filepath, cycles, v_targets=[1.8, 1.7], j_targets=None,
                  eis_mapped=None, loss_data=None, fit_result=None,
-                 eis_results=None, ir_data=None, geo_area=5.0):
+                 eis_results=None, ir_data=None, geo_area=5.0,
+                 eis_fit_results=None, eis_loss_data=None,
+                 coth_results=None):
     """
     Export all analysis data to a multi-sheet Excel workbook.
 
@@ -1594,6 +1768,107 @@ def export_excel(filepath, cycles, v_targets=[1.8, 1.7], j_targets=None,
                 ws7.append([round(ir_entry['j_hfr'][i], 6),
                             round(ir_entry['asr_hfr'][i], 2)])
 
+    # ── Sheet 8: EIS Circuit Fit ──
+    if eis_fit_results:
+        ws8 = wb.create_sheet("EIS Circuit Fit")
+        ws8.append(['Parameter', 'Units'] +
+                   [efr.get('label', f'EIS {i+1}')
+                    for i, efr in enumerate(eis_fit_results)])
+
+        # Add j and V_dc context rows if available
+        j_row = ['j', 'A/cm²'] + [round(efr['j'], 4) if efr.get('j') is not None else ''
+                                    for efr in eis_fit_results]
+        v_row = ['V_dc', 'V'] + [round(efr['dc_v'], 4) if efr.get('dc_v') is not None else ''
+                                  for efr in eis_fit_results]
+        ws8.append(j_row)
+        ws8.append(v_row)
+        ws8.append([])  # blank separator
+
+        rows = [
+            ('R₀ (ohmic)', 'mΩ·cm²', [efr['R0_asr'] for efr in eis_fit_results]),
+            ('R₁ (HF arc)', 'mΩ·cm²', [efr['R1_asr'] for efr in eis_fit_results]),
+            ('Q₁', 'S·s^n', [efr['Q1'] for efr in eis_fit_results]),
+            ('n₁', '—', [efr['n1'] for efr in eis_fit_results]),
+            ('f_c1', 'Hz', [efr['fc1_Hz'] for efr in eis_fit_results]),
+            ('R₂ (CL ionic)', 'mΩ·cm²', [efr['R2_asr'] for efr in eis_fit_results]),
+            ('Q₂', 'S·s^n', [efr['Q2'] for efr in eis_fit_results]),
+            ('n₂', '—', [efr['n2'] for efr in eis_fit_results]),
+            ('f_c2', 'Hz', [efr['fc2_Hz'] for efr in eis_fit_results]),
+            ('R_total', 'mΩ·cm²', [efr['R_total_asr'] for efr in eis_fit_results]),
+            ('RMSE', 'mΩ·cm²', [efr['rmse_mohm_cm2'] for efr in eis_fit_results]),
+        ]
+        for name, unit, vals in rows:
+            ws8.append([name, unit] + [round(v, 4) for v in vals])
+
+    # ── Sheet 9: EIS Loss Decomposition ──
+    if eis_loss_data is not None:
+        cn_eis, dep_eis, eis_losses = eis_loss_data
+        if len(cn_eis) > 0:
+            ws9 = wb.create_sheet("EIS Losses")
+            dep_label = 'V [V]' if j_targets else 'j [A/cm²]'
+            ws9.append(['Cycle', dep_label,
+                        'R₀ membrane [mV]', 'R₁ charge transfer [mV]',
+                        'CL ionic coth [mV]', 'Kinetic residual [mV]',
+                        'Total non-E_rev [mV]'])
+            for i in range(len(cn_eis)):
+                total = (eis_losses['V_R0_mV'][i] + eis_losses['V_R1_mV'][i] +
+                         eis_losses['V_CL_mV'][i] + eis_losses['V_kinetic_mV'][i])
+                ws9.append([
+                    int(cn_eis[i]),
+                    round(dep_eis[i], 4),
+                    round(eis_losses['V_R0_mV'][i], 2),
+                    round(eis_losses['V_R1_mV'][i], 2),
+                    round(eis_losses['V_CL_mV'][i], 2),
+                    round(eis_losses['V_kinetic_mV'][i], 2),
+                    round(total, 2),
+                ])
+
+    # ── Sheet 10: Coth iR Correction ──
+    if coth_results:
+        for gi, cr_entry in enumerate(coth_results):
+            cr = cr_entry['coth_result']
+            tfr = cr_entry['tafel_result']
+            ci = cr_entry['cycle_idx']
+
+            sheet_name = f'Coth Cycle {ci+1}'
+            if len(sheet_name) > 31:
+                sheet_name = sheet_name[:31]
+            ws10 = wb.create_sheet(sheet_name)
+
+            # Tafel summary
+            ws10.append(['Transmission-Line iR Correction'])
+            ws10.append([])
+            if tfr is not None:
+                ws10.append(['Tafel Fit Results'])
+                ws10.append(['j₀,anode (A/cm²)', f"{tfr['j0_a']:.4e}"])
+                ws10.append(['α_anode', round(tfr['alpha_a'], 4)])
+                ws10.append(['b_anode (mV/dec)', round(tfr['ba_mVdec'], 1)])
+                ws10.append(['j₀,cathode (A/cm²)', f"{tfr['j0_c']:.4e}"])
+                ws10.append(['b_cathode (mV/dec)', round(tfr['bc_mVdec'], 1)])
+                ws10.append(['c_mt (V·cm⁴/A²)', round(tfr['c_mt'], 6)])
+                ws10.append(['E_rev (V)', round(tfr['E_rev'], 4)])
+                ws10.append(['RMSE (mV)', round(tfr['rmse_mV'], 2)])
+                ws10.append([])
+
+            # Polcurve data with corrections
+            V_mt = tfr['V_mt'] if tfr is not None else np.zeros(len(cr['j']))
+            ws10.append(['j (A/cm²)', 'V_raw (V)', 'V_R0 (mV)', 'V_R1 (mV)',
+                         'V_CL_coth (mV)', 'V_mt (mV)', 'V_irfree (V)',
+                         'R₀ (mΩ·cm²)', 'R₁ (mΩ·cm²)', 'R₂ (mΩ·cm²)'])
+            for i in range(len(cr['j'])):
+                ws10.append([
+                    round(float(cr['j'][i]), 6),
+                    round(float(cr['V_raw'][i]), 5),
+                    round(float(cr['V_R0'][i]) * 1000, 2),
+                    round(float(cr['V_R1'][i]) * 1000, 2),
+                    round(float(cr['V_CL_ionic'][i]) * 1000, 2),
+                    round(float(V_mt[i]) * 1000, 2),
+                    round(float(cr['V_irfree'][i]), 5),
+                    round(float(cr['R0_interp'][i]), 2),
+                    round(float(cr['R1_interp'][i]), 2),
+                    round(float(cr['R2_interp'][i]), 2),
+                ])
+
     wb.save(filepath)
     print(f"  Data exported: {filepath}")
 
@@ -1781,6 +2056,326 @@ def extract_hfr(eis, geo_area=5.0):
 
     return {'hfr_ohm': hfr, 'asr_ohm_cm2': asr, 'asr_mohm_cm2': asr_m,
             'f_hfr': f_hfr}
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  EIS Equivalent Circuit Fitting — R₀-(R₁Q₁)-(R₂Q₂)
+# ═══════════════════════════════════════════════════════════════════
+
+def _zarc(omega, R, Q, n):
+    """Impedance of a parallel R-CPE element (ZARC)."""
+    Z_cpe = 1.0 / (Q * (1j * omega) ** n)
+    return R * Z_cpe / (R + Z_cpe)
+
+
+def _circuit_r_rq_rq(omega, params):
+    """
+    R₀-(R₁Q₁)-(R₂Q₂) equivalent circuit.
+
+    params: [R0, R1, Q1, n1, R2, Q2, n2]
+      R0  — ohmic resistance (Ω)
+      R1  — high-frequency arc resistance (Ω)
+      Q1  — high-frequency CPE magnitude (S·s^n)
+      n1  — high-frequency CPE exponent (0-1)
+      R2  — low-frequency arc resistance (Ω)
+      Q2  — low-frequency CPE magnitude (S·s^n)
+      n2  — low-frequency CPE exponent (0-1)
+    """
+    R0, R1, Q1, n1, R2, Q2, n2 = params
+    Z = R0 + _zarc(omega, R1, Q1, n1) + _zarc(omega, R2, Q2, n2)
+    return Z
+
+
+def fit_eis_circuit(eis, geo_area=5.0, hfr_seed=None):
+    """
+    Fit R₀-(R₁Q₁)-(R₂Q₂) to EIS data.
+
+    If -Z'' crosses zero between arcs, the Z' value at that crossing
+    constrains R₀+R₁ (±5%).
+
+    Parameters
+    ----------
+    eis : dict with 'freq', 'zre', 'zim' arrays
+    geo_area : float — cell area in cm²
+    hfr_seed : float or None — seed R0 from HFR (Ω)
+
+    Returns
+    -------
+    dict with fit parameters, uncertainties, and diagnostic info,
+    or None if fitting fails.
+    """
+    from scipy.optimize import least_squares
+
+    freq = eis['freq']
+    zre = eis['zre']
+    zim = eis['zim']
+    omega = 2 * np.pi * freq
+
+    # Target: complex impedance (Z = Z' - jZ'')
+    Z_data = zre - 1j * zim
+
+    # ── Find Z'' zero crossing between arcs ──
+    # zim is stored as -Z'' (positive = capacitive arc).
+    # Sort by frequency high→low to walk through the spectrum.
+    order = np.argsort(freq)[::-1]
+    freq_s = freq[order]
+    zre_s = zre[order]
+    zim_s = zim[order]  # -Z'': positive during arcs, ~0 at intercepts
+
+    # ── Find R₀+R₁ constraint from HFR intercept ──
+    # Uses the same rules as extract_hfr:
+    #   1. Z'' zero crossing (inductive→capacitive or between arcs)
+    #   2. If crossing freq < 1500 Hz, fall back to Z' at ~1000 Hz
+    #   3. If no crossing, use Z' at minimum |Z''|, with 1000 Hz fallback
+    R0R1_crossing = None
+    zim_max = max(abs(zim_s)) if len(zim_s) > 0 else 1.0
+
+    # Check for zero crossing
+    crossing_idx = None
+    for i in range(len(zim_s) - 1):
+        # HF crossing: -Z'' goes from negative (inductive) to positive (arc)
+        if zim_s[i] <= 0 and zim_s[i + 1] > 0:
+            crossing_idx = i
+            break
+        # Mid-spectrum crossing: -Z'' goes from positive back to ≤0
+        if zim_s[i] > 0.05 * zim_max and zim_s[i + 1] <= 0:
+            if i < len(zim_s) - 3 and zre_s[i] < 0.95 * zre_s.max():
+                crossing_idx = i
+                break
+
+    if crossing_idx is not None:
+        frac = abs(zim_s[crossing_idx]) / abs(zim_s[crossing_idx + 1] - zim_s[crossing_idx])
+        zre_cross = zre_s[crossing_idx] + frac * (zre_s[crossing_idx + 1] - zre_s[crossing_idx])
+        f_crossing = freq_s[crossing_idx] + frac * (freq_s[crossing_idx + 1] - freq_s[crossing_idx])
+
+        if f_crossing >= 1500:
+            R0R1_crossing = zre_cross
+            print(f"    R₀+R₁ from Z'' crossing: {R0R1_crossing*geo_area*1000:.1f} mΩ·cm² "
+                  f"at {f_crossing:.0f} Hz")
+        else:
+            # Crossing below 1500 Hz — likely between arcs, use Z' at ~1000 Hz
+            idx_1k = np.argmin(np.abs(freq_s - 1000.0))
+            R0R1_crossing = zre_s[idx_1k]
+            print(f"    R₀+R₁ from Z' at {freq_s[idx_1k]:.0f} Hz: "
+                  f"{R0R1_crossing*geo_area*1000:.1f} mΩ·cm² "
+                  f"(crossing at {f_crossing:.0f} Hz < 1500 Hz)")
+    else:
+        # No crossing — use Z' at frequency nearest to 1000 Hz
+        idx_1k = np.argmin(np.abs(freq_s - 1000.0))
+        R0R1_crossing = zre_s[idx_1k]
+        print(f"    R₀+R₁ from Z' at {freq_s[idx_1k]:.0f} Hz: "
+              f"{R0R1_crossing*geo_area*1000:.1f} mΩ·cm² (no Z'' crossing)")
+
+    # Initial guesses
+    R0_guess = hfr_seed if hfr_seed else zre.min()
+    z_span = zre.max() - zre.min()
+
+    if R0R1_crossing is not None:
+        # Use crossing to set better initial guesses
+        R1_guess = max(R0R1_crossing - R0_guess, z_span * 0.1)
+        R2_guess = max(z_span - R1_guess, z_span * 0.1)
+    else:
+        R1_guess = z_span * 0.4
+        R2_guess = z_span * 0.6
+
+    # CPE guesses
+    Q1_guess = 0.01
+    Q2_guess = 0.1
+    n1_guess = 0.85
+    n2_guess = 0.85
+
+    x0 = [R0_guess, R1_guess, Q1_guess, n1_guess, R2_guess, Q2_guess, n2_guess]
+
+    # Bounds
+    lo = [R0_guess * 0.5, 1e-6,   1e-6, 0.3, 1e-6,   1e-5, 0.3]
+    hi = [R0_guess * 2.0, z_span * 3, 10.0, 1.0, z_span * 3, 100.0, 1.0]
+
+    # Constraint weight for R0+R1 crossing
+    margin = 0.05  # ±5%
+    constraint_weight = 10.0  # strong penalty
+
+    def residuals(x):
+        Z_model = _circuit_r_rq_rq(omega, x)
+        diff = Z_model - Z_data
+        weights = 1.0 / np.maximum(np.abs(Z_data), 1e-10)
+        res = np.concatenate([diff.real * weights, diff.imag * weights])
+
+        # Add R0+R1 constraint if crossing was found
+        if R0R1_crossing is not None:
+            R0_fit, R1_fit = x[0], x[1]
+            R0R1_fit = R0_fit + R1_fit
+            # Penalty: deviation from crossing value, normalized
+            deviation = (R0R1_fit - R0R1_crossing) / R0R1_crossing
+            # Zero penalty within ±margin, linear outside
+            if abs(deviation) > margin:
+                penalty = constraint_weight * (abs(deviation) - margin)
+            else:
+                penalty = 0.0
+            res = np.append(res, penalty)
+
+        return res
+
+    try:
+        result = least_squares(residuals, x0, bounds=(lo, hi),
+                                method='trf', loss='soft_l1',
+                                f_scale=0.1, max_nfev=5000)
+    except Exception as e:
+        print(f"    EIS fit failed: {e}")
+        return None
+
+    if not result.success:
+        print(f"    EIS fit did not converge: {result.message}")
+        return None
+
+    xf = result.x
+    R0, R1, Q1, n1, R2, Q2, n2 = xf
+
+    # Ensure R1 is the high-frequency arc (higher characteristic freq)
+    fc1 = (1.0 / (R1 * Q1)) ** (1.0 / n1) / (2 * np.pi) if R1 > 0 and Q1 > 0 else 0
+    fc2 = (1.0 / (R2 * Q2)) ** (1.0 / n2) / (2 * np.pi) if R2 > 0 and Q2 > 0 else 0
+
+    # Swap if arc 2 has higher characteristic frequency
+    if fc2 > fc1:
+        R1, Q1, n1, R2, Q2, n2 = R2, Q2, n2, R1, Q1, n1
+        fc1, fc2 = fc2, fc1
+
+    # Convert to ASR (mΩ·cm²)
+    R0_asr = R0 * geo_area * 1000
+    R1_asr = R1 * geo_area * 1000
+    R2_asr = R2 * geo_area * 1000
+    R_total_asr = (R0 + R1 + R2) * geo_area * 1000
+
+    # Compute model curve for plotting
+    Z_model = _circuit_r_rq_rq(omega, [R0, R1, Q1, n1, R2, Q2, n2])
+
+    # Goodness of fit
+    err = Z_model - Z_data
+    rmse = np.sqrt(np.mean(np.abs(err) ** 2)) * geo_area * 1000
+
+    fit_result = {
+        'R0_ohm': R0, 'R1_ohm': R1, 'R2_ohm': R2,
+        'Q1': Q1, 'n1': n1, 'Q2': Q2, 'n2': n2,
+        'R0_asr': R0_asr, 'R1_asr': R1_asr, 'R2_asr': R2_asr,
+        'R_total_asr': R_total_asr,
+        'fc1_Hz': fc1, 'fc2_Hz': fc2,
+        'rmse_mohm_cm2': rmse,
+        'Z_model': Z_model,
+        'freq': freq, 'Z_data': Z_data,
+        'converged': result.success,
+        'R0R1_crossing': R0R1_crossing,
+    }
+
+    return fit_result
+
+
+def print_eis_fit_summary(fr, geo_area=5.0):
+    """Print formatted EIS fit results."""
+    print(f"\n    EIS Circuit Fit: R₀-(R₁Q₁)-(R₂Q₂)")
+    print(f"    {'─' * 50}")
+    print(f"    R₀ (ohmic)     : {fr['R0_asr']:.1f} mΩ·cm²")
+    print(f"    R₁ (HF arc)    : {fr['R1_asr']:.1f} mΩ·cm²  "
+          f"(f_c = {fr['fc1_Hz']:.0f} Hz, n = {fr['n1']:.3f})")
+    print(f"    R₂ (CL ionic)  : {fr['R2_asr']:.1f} mΩ·cm²  "
+          f"(f_c = {fr['fc2_Hz']:.0f} Hz, n = {fr['n2']:.3f})")
+    print(f"    R_total        : {fr['R_total_asr']:.1f} mΩ·cm²")
+    print(f"    RMSE           : {fr['rmse_mohm_cm2']:.2f} mΩ·cm²")
+
+
+def plot_eis_fit(eis, fit_result, geo_area=5.0, title=None, save_path=None):
+    """
+    Three-panel EIS fit plot:
+      Left   — Nyquist: data + model + individual arcs
+      Top R  — Bode magnitude
+      Bot R  — Bode phase
+    """
+    freq = eis['freq']
+    zre_data = eis['zre'] * geo_area * 1000   # mΩ·cm²
+    zim_data = eis['zim'] * geo_area * 1000   # -Z'' positive = capacitive
+
+    Z_model = fit_result['Z_model']
+    zre_model = Z_model.real * geo_area * 1000
+    zim_model = -Z_model.imag * geo_area * 1000  # convert to -Z'' convention
+
+    R0 = fit_result['R0_ohm']
+    R1, Q1, n1 = fit_result['R1_ohm'], fit_result['Q1'], fit_result['n1']
+    R2, Q2, n2 = fit_result['R2_ohm'], fit_result['Q2'], fit_result['n2']
+
+    omega = 2 * np.pi * freq
+    Z_arc1 = _zarc(omega, R1, Q1, n1)
+    Z_arc2 = _zarc(omega, R2, Q2, n2)
+
+    zre_arc1 = (R0 + Z_arc1.real) * geo_area * 1000
+    zim_arc1 = -Z_arc1.imag * geo_area * 1000
+    zre_arc2 = (R0 + R1 + Z_arc2.real) * geo_area * 1000
+    zim_arc2 = -Z_arc2.imag * geo_area * 1000
+
+    fig = plt.figure(figsize=(14, 5.5), dpi=120)
+    gs = fig.add_gridspec(2, 2, width_ratios=[1.3, 1], hspace=0.35)
+    ax1 = fig.add_subplot(gs[:, 0])    # Nyquist (spans both rows)
+    ax2 = fig.add_subplot(gs[0, 1])    # Bode |Z|
+    ax3 = fig.add_subplot(gs[1, 1])    # Bode phase
+
+    ttl = title or 'EIS Equivalent Circuit Fit'
+    fig.suptitle(ttl, fontsize=12, fontweight='bold')
+
+    # ── Nyquist ──
+    ax1.plot(zre_data, zim_data, 'o', ms=4, color='#1f77b4',
+             label='Data', zorder=3)
+    ax1.plot(zre_model, zim_model, '-', lw=2, color='#d62728',
+             label='Fit (R₀-RQ-RQ)', zorder=4)
+
+    # Individual arcs
+    ax1.plot(zre_arc1, zim_arc1, '--', lw=1.2, color='#ff7f0e', alpha=0.7,
+             label=f'HF arc ({fit_result["R1_asr"]:.1f} mΩ·cm²)')
+    ax1.plot(zre_arc2, zim_arc2, '--', lw=1.2, color='#2ca02c', alpha=0.7,
+             label=f'LF arc / CL ionic ({fit_result["R2_asr"]:.1f} mΩ·cm²)')
+
+    # Mark R0
+    R0_asr = fit_result['R0_asr']
+    ax1.plot(R0_asr, 0, '*', ms=12, color='#d62728', markeredgecolor='k',
+             markeredgewidth=0.6, zorder=5,
+             label=f'R₀ = {R0_asr:.1f} mΩ·cm²')
+
+    ax1.axhline(0, color='k', lw=0.5, alpha=0.5)
+    ax1.set_xlabel("Z'  [mΩ·cm²]", fontsize=11)
+    ax1.set_ylabel("-Z''  [mΩ·cm²]", fontsize=11)
+    ax1.set_title('Nyquist', fontsize=10)
+    ax1.legend(fontsize=8, loc='upper left')
+    ax1.grid(True, alpha=0.3)
+    ax1.set_aspect('equal', adjustable='datalim')
+
+    # ── Bode magnitude ──
+    Z_data_complex = eis['zre'] - 1j * eis['zim']
+    Z_mag_data = np.abs(Z_data_complex) * geo_area * 1000
+    Z_mag_model = np.abs(Z_model) * geo_area * 1000
+
+    ax2.loglog(freq, Z_mag_data, 'o', ms=3, color='#1f77b4', label='Data')
+    ax2.loglog(freq, Z_mag_model, '-', lw=1.5, color='#d62728', label='Fit')
+    ax2.set_ylabel('|Z|  [mΩ·cm²]', fontsize=10)
+    ax2.set_title('Bode Magnitude', fontsize=10)
+    ax2.legend(fontsize=8)
+    ax2.grid(True, alpha=0.3, which='both')
+
+    # ── Bode phase ──
+    phase_data = np.degrees(np.arctan2(eis['zim'], eis['zre']))
+    phase_model = np.degrees(np.arctan2(-Z_model.imag, Z_model.real))
+
+    ax3.semilogx(freq, phase_data, 'o', ms=3, color='#1f77b4', label='Data')
+    ax3.semilogx(freq, phase_model, '-', lw=1.5, color='#d62728', label='Fit')
+    ax3.set_xlabel('Frequency  [Hz]', fontsize=10)
+    ax3.set_ylabel('Phase  [°]', fontsize=10)
+    ax3.set_title('Bode Phase', fontsize=10)
+    ax3.legend(fontsize=8)
+    ax3.grid(True, alpha=0.3, which='both')
+
+    plt.subplots_adjust(left=0.08, right=0.95, top=0.90, bottom=0.12,
+                        wspace=0.35, hspace=0.35)
+    if save_path:
+        fig.savefig(save_path, bbox_inches='tight')
+        print(f"    Plot saved: {save_path}")
+    else:
+        plt.show()
+    return fig
 
 
 def plot_nyquist(eis, hfr_result, geo_area=5.0, save_path=None):
@@ -2289,6 +2884,346 @@ def plot_ir_correction(j_pol, V_pol, V_irfree, j_hfr, asr_hfr, asr_interp,
     ax3.set_xlim(left=0)
     ax3.grid(True, alpha=0.3)
     ax3.set_title('Ohmic Loss', fontsize=10)
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, bbox_inches='tight')
+        print(f"  Plot saved: {save_path}")
+    else:
+        plt.show()
+    return fig
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Transmission-line iR correction (coth model)
+# ═══════════════════════════════════════════════════════════════════
+
+def _coth(x):
+    """Hyperbolic cotangent, safe for large x."""
+    x = np.asarray(x, dtype=float)
+    result = np.ones_like(x)
+    small = np.abs(x) < 50
+    result[small] = np.cosh(x[small]) / np.sinh(x[small])
+    return result
+
+
+def coth_cl_impedance(R1, R2):
+    """
+    Transmission line CL impedance: √(R1·R2) × coth(√(R2/R1))
+
+    R1 = charge transfer resistance (Ω or Ω·cm²)
+    R2 = CL ionic resistance (Ω or Ω·cm²)
+
+    Returns the full CL impedance (includes R1 contribution).
+    """
+    if R1 <= 0 or R2 <= 0:
+        return R1 + R2 / 3.0  # fallback
+    xi = np.sqrt(R2 / R1)
+    return np.sqrt(R1 * R2) * float(_coth(np.array([xi]))[0])
+
+
+def coth_cl_ionic_only(R1, R2):
+    """
+    CL ionic voltage loss only (excluding charge transfer R1).
+
+    V_CL_ionic = j × [√(R1·R2)·coth(√(R2/R1)) - R1]
+
+    At low j (full utilization): ≈ R2/3
+    At high j (under-utilized): ≈ √(R1·R2) - R1
+    """
+    Z_total = coth_cl_impedance(R1, R2)
+    return max(0.0, Z_total - R1)
+
+
+def compute_coth_corrections(j_pol, V_pol, eis_fits, geo_area=5.0):
+    """
+    Compute transmission-line iR correction for a polcurve using
+    EIS circuit fit R0, R1, R2 at each operating current.
+
+    Parameters
+    ----------
+    j_pol : array — polcurve current densities (A/cm²)
+    V_pol : array — polcurve voltages (V)
+    eis_fits : list of circuit fit dicts with 'j', 'R0_ohm', 'R1_ohm', 'R2_ohm'
+    geo_area : float — cell area (cm²)
+
+    Returns
+    -------
+    dict with arrays:
+        j, V_raw, V_R0, V_R1, V_CL_ionic, V_ohmic_total, V_irfree,
+        R0_interp, R1_interp, R2_interp (all in native units)
+    """
+    # Extract R values from fits (in Ω, not area-normalized)
+    j_eis = np.array([f['j'] for f in eis_fits])
+    R0_eis = np.array([f['R0_ohm'] for f in eis_fits])
+    R1_eis = np.array([f['R1_ohm'] for f in eis_fits])
+    R2_eis = np.array([f['R2_ohm'] for f in eis_fits])
+
+    order = np.argsort(j_eis)
+    j_eis = j_eis[order]
+    R0_eis = R0_eis[order]
+    R1_eis = R1_eis[order]
+    R2_eis = R2_eis[order]
+
+    # Interpolate R0, R1, R2 at each polcurve j
+    # Clamp to EIS range (no extrapolation)
+    j_clip = np.clip(j_pol, j_eis.min(), j_eis.max())
+    R0_j = np.interp(j_clip, j_eis, R0_eis)
+    R1_j = np.interp(j_clip, j_eis, R1_eis)
+    R2_j = np.interp(j_clip, j_eis, R2_eis)
+
+    # Compute voltage losses at each j
+    # V = j (A/cm²) × R (Ω) × A (cm²)  →  V
+    V_R0 = j_pol * R0_j * geo_area                  # membrane ohmic
+    V_R1 = j_pol * R1_j * geo_area                  # charge transfer
+    V_CL_ionic = np.array([j_pol[i] * coth_cl_ionic_only(R1_j[i], R2_j[i]) * geo_area
+                           for i in range(len(j_pol))])  # CL ionic (coth)
+    V_ohmic_total = V_R0 + V_CL_ionic             # total non-kinetic ohmic (coth)
+
+    # iR-free for Tafel fitting: subtract R0 + R1 + CL ionic (coth)
+    V_irfree = V_pol - V_R0 - V_R1 - V_CL_ionic
+
+    return {
+        'j': j_pol,
+        'V_raw': V_pol,
+        'V_R0': V_R0,
+        'V_R1': V_R1,
+        'V_CL_ionic': V_CL_ionic,
+        'V_ohmic_total': V_ohmic_total,
+        'V_irfree': V_irfree,
+        'R0_interp': R0_j * geo_area * 1000,  # mΩ·cm²
+        'R1_interp': R1_j * geo_area * 1000,
+        'R2_interp': R2_j * geo_area * 1000,
+    }
+
+
+def fit_tafel_irfree(j, V_irfree, T_C=80.0, p_cathode_barg=0.0,
+                      p_anode_barg=0.0, j_min=0.01):
+    """
+    Fit Tafel kinetics + mass transport to an iR-corrected electrolyzer polcurve.
+
+    V_irfree = E_rev + b_a × log10(j/j0_a) + b_c × log10(j/j0_c) + c_mt × j²
+
+    where b_c is fixed at RT/(0.5·nF) and b_a, j0_a, j0_c, c_mt are fitted.
+
+    Parameters
+    ----------
+    j : array — current density (A/cm²)
+    V_irfree : array — iR-free voltage (V)
+    T_C : float — temperature (°C)
+    j_min : float — minimum j for fitting (A/cm²)
+
+    Returns
+    -------
+    dict with fit results or None if fitting fails.
+    """
+    from scipy.optimize import least_squares
+
+    E = E_rev(T_C, p_cathode_barg, p_anode_barg)
+    T_K = T_C + 273.15
+
+    mask = j >= j_min
+    j_fit = j[mask]
+    V_fit = V_irfree[mask]
+
+    if len(j_fit) < 3:
+        print(f"    Tafel fit: only {len(j_fit)} points with j >= {j_min}, skipping")
+        return None
+
+    # Model: V = E_rev + b_a·log10(j/j0_a) + b_c·log10(j/j0_c) + c_mt·j²
+    # b_c fixed at RT/(0.5·nF)
+    bc = (_R * T_K) / (0.5 * _n_e * _F) / np.log(10)  # V/decade
+
+    def model(x):
+        log_j0a, alpha_a, log_j0c, c_mt = x
+        j0a = 10**log_j0a
+        j0c = 10**log_j0c
+        ba = (_R * T_K) / (alpha_a * _n_e * _F) / np.log(10)
+        eta_a = np.where(j_fit > j0a, ba * np.log10(j_fit / j0a), 0.0)
+        eta_c = np.where(j_fit > j0c, bc * np.log10(j_fit / j0c), 0.0)
+        return E + eta_a + eta_c + c_mt * j_fit**2 - V_fit
+
+    x0 = [-7.0, 0.5, -3.0, 0.0]
+    lo = [-12.0, 0.2, -8.0, 0.0]
+    hi = [-3.0, 2.0, -0.5, 0.1]
+
+    try:
+        res = least_squares(model, x0, bounds=(lo, hi), method='trf',
+                            loss='soft_l1', f_scale=0.005)
+    except Exception as e:
+        print(f"    Tafel fit failed: {e}")
+        return None
+
+    if not res.success:
+        print(f"    Tafel fit did not converge")
+        return None
+
+    log_j0a, alpha_a, log_j0c, c_mt = res.x
+    j0a = 10**log_j0a
+    j0c = 10**log_j0c
+    ba_Vdec = (_R * T_K) / (alpha_a * _n_e * _F) / np.log(10)
+
+    # Compute model over full j range
+    j_smooth = np.linspace(max(j.min(), 1e-4), j.max() * 1.05, 200)
+    V_model_smooth = E + np.where(j_smooth > j0a,
+                                   ba_Vdec * np.log10(j_smooth / j0a), 0.0) \
+                       + np.where(j_smooth > j0c,
+                                   bc * np.log10(j_smooth / j0c), 0.0) \
+                       + c_mt * j_smooth**2
+
+    # Residuals on fit data
+    V_model_fit = E + np.where(j_fit > j0a,
+                                ba_Vdec * np.log10(j_fit / j0a), 0.0) \
+                    + np.where(j_fit > j0c,
+                                bc * np.log10(j_fit / j0c), 0.0) \
+                    + c_mt * j_fit**2
+    residuals = V_fit - V_model_fit
+    rmse = np.sqrt(np.mean(residuals**2)) * 1000  # mV
+
+    # Compute mass transport contribution at each polcurve j
+    V_mt = c_mt * j**2
+
+    return {
+        'j0_a': j0a,
+        'alpha_a': alpha_a,
+        'ba_mVdec': ba_Vdec * 1000,
+        'j0_c': j0c,
+        'bc_mVdec': bc * 1000,
+        'c_mt': c_mt,
+        'E_rev': E,
+        'rmse_mV': rmse,
+        'j_fit': j_fit, 'V_fit': V_fit,
+        'j_smooth': j_smooth, 'V_model_smooth': V_model_smooth,
+        'V_mt': V_mt,
+        'residuals': residuals,
+    }
+
+
+def plot_coth_analysis(coth_result, tafel_result, eis_fits, cycle_num=None,
+                        geo_area=5.0, T_C=80.0, p_cathode_barg=0.0,
+                        p_anode_barg=0.0, save_path=None):
+    """
+    Four-panel plot for transmission-line iR correction analysis:
+      Top-left:  Polcurve — raw, R₀-corrected, fully corrected, Tafel fit
+      Top-right: Loss breakdown vs j — stacked losses
+      Bot-left:  R₀, R₁, R₂ vs j from EIS fits
+      Bot-right: Tafel fit residuals
+    """
+    cr = coth_result
+    j = cr['j']
+    E = E_rev(T_C, p_cathode_barg, p_anode_barg)
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10), dpi=120)
+    ax1, ax2, ax3, ax4 = axes.flat
+
+    ttl = 'Transmission-Line iR Correction'
+    if cycle_num is not None:
+        ttl += f' — Cycle {cycle_num}'
+    fig.suptitle(ttl, fontsize=13, fontweight='bold')
+
+    # ── Top-left: Polcurves ──
+    ax1.plot(j, cr['V_raw'], 'o-', ms=4, lw=1.5, color='#1f77b4',
+             label='Raw polcurve')
+    ax1.plot(j, cr['V_irfree'], '^-', ms=4, lw=1.5, color='#2ca02c',
+             label='iR-free (R₀+R₁+CL coth)')
+
+    if tafel_result is not None:
+        ax1.plot(tafel_result['j_smooth'], tafel_result['V_model_smooth'],
+                 '-', lw=2, color='#d62728', alpha=0.8,
+                 label=f'Tafel fit (b_a={tafel_result["ba_mVdec"]:.0f}, '
+                       f'b_c={tafel_result["bc_mVdec"]:.0f} mV/dec)')
+
+    ax1.axhline(E, color='gray', ls=':', lw=1, alpha=0.5, label=f'E_rev = {E:.3f} V')
+    ax1.set_xlabel('Current density  j  [A/cm²]', fontsize=10)
+    ax1.set_ylabel('Cell voltage  [V]', fontsize=10)
+    ax1.set_title('Polcurve & iR Correction', fontsize=10)
+    ax1.legend(fontsize=7.5, loc='upper left')
+    ax1.grid(True, alpha=0.3)
+    ax1.set_xlim(left=0)
+
+    # ── Top-right: Loss breakdown ──
+    V_total_eta = cr['V_raw'] - E
+
+    # Mass transport from Tafel fit (if available)
+    V_mt = tafel_result['V_mt'] if tafel_result is not None else np.zeros_like(j)
+    V_kinetic_residual = V_total_eta - cr['V_R0'] - cr['V_R1'] - cr['V_CL_ionic'] - V_mt
+    V_kinetic_residual = np.maximum(V_kinetic_residual, 0)
+
+    ax2.fill_between(j, 0, cr['V_R0'] * 1000, alpha=0.4, color='#4CAF50',
+                     label='R₀ (membrane)')
+    base = cr['V_R0'] * 1000
+    ax2.fill_between(j, base, base + cr['V_R1'] * 1000, alpha=0.4,
+                     color='#FF5722', label='R₁ (charge transfer)')
+    base2 = base + cr['V_R1'] * 1000
+    ax2.fill_between(j, base2, base2 + cr['V_CL_ionic'] * 1000, alpha=0.4,
+                     color='#FF9800', label='CL ionic (coth)')
+    base3 = base2 + cr['V_CL_ionic'] * 1000
+    ax2.fill_between(j, base3, base3 + V_mt * 1000, alpha=0.4,
+                     color='#9C27B0', label='Mass transport')
+    base4 = base3 + V_mt * 1000
+    ax2.fill_between(j, base4, base4 + V_kinetic_residual * 1000, alpha=0.4,
+                     color='#E91E63', label='Kinetic (activation)')
+
+    ax2.plot(j, cr['V_R0'] * 1000, '-', color='#4CAF50', lw=1.2)
+    ax2.plot(j, (cr['V_R0'] + cr['V_R1']) * 1000, '-', color='#FF5722', lw=1.2)
+    ax2.plot(j, (cr['V_R0'] + cr['V_R1'] + cr['V_CL_ionic']) * 1000,
+             '-', color='#FF9800', lw=1.2)
+    ax2.plot(j, (cr['V_R0'] + cr['V_R1'] + cr['V_CL_ionic'] + V_mt) * 1000,
+             '-', color='#9C27B0', lw=1.2)
+    ax2.plot(j, V_total_eta * 1000, 'o-', ms=3, color='k', lw=1.2,
+             label='Total overpotential')
+
+    ax2.set_xlabel('Current density  j  [A/cm²]', fontsize=10)
+    ax2.set_ylabel('Voltage loss  [mV]', fontsize=10)
+    ax2.set_title('Loss Breakdown', fontsize=10)
+    ax2.legend(fontsize=7.5, loc='upper left')
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xlim(left=0)
+
+    # ── Bottom-left: R values vs j ──
+    j_eis = [f['j'] for f in eis_fits]
+    R0_eis = [f['R0_asr'] for f in eis_fits]
+    R1_eis = [f['R1_asr'] for f in eis_fits]
+    R2_eis = [f['R2_asr'] for f in eis_fits]
+
+    ax3.plot(j_eis, R0_eis, 'o-', ms=6, lw=1.5, color='#4CAF50',
+             label='R₀ (membrane)')
+    ax3.plot(j_eis, R1_eis, 's-', ms=6, lw=1.5, color='#FF5722',
+             label='R₁ (charge transfer)')
+    ax3.plot(j_eis, R2_eis, '^-', ms=6, lw=1.5, color='#FF9800',
+             label='R₂ (CL ionic)')
+
+    # Mark where R1 = R2 (utilization transition)
+    for i in range(len(j_eis) - 1):
+        if (R1_eis[i] - R2_eis[i]) * (R1_eis[i+1] - R2_eis[i+1]) < 0:
+            j_cross = j_eis[i] + (j_eis[i+1] - j_eis[i]) * \
+                      (R1_eis[i] - R2_eis[i]) / ((R1_eis[i] - R2_eis[i]) -
+                       (R1_eis[i+1] - R2_eis[i+1]))
+            ax3.axvline(j_cross, color='gray', ls='--', lw=1, alpha=0.7)
+            ax3.annotate(f'R₁=R₂ @ {j_cross:.2f}', (j_cross, max(R1_eis)),
+                         fontsize=7, ha='center', va='bottom')
+
+    ax3.set_xlabel('Current density  j  [A/cm²]', fontsize=10)
+    ax3.set_ylabel('Resistance  [mΩ·cm²]', fontsize=10)
+    ax3.set_title('EIS Fit Parameters vs. j', fontsize=10)
+    ax3.legend(fontsize=8)
+    ax3.grid(True, alpha=0.3)
+    ax3.set_xlim(left=0)
+
+    # ── Bottom-right: Tafel residuals ──
+    if tafel_result is not None:
+        ax4.stem(tafel_result['j_fit'], tafel_result['residuals'] * 1000,
+                 linefmt='C0-', markerfmt='C0o', basefmt='k-')
+        ax4.axhline(0, color='k', lw=0.5)
+        ax4.set_xlabel('Current density  j  [A/cm²]', fontsize=10)
+        ax4.set_ylabel('Residual  [mV]', fontsize=10)
+        ax4.set_title(f'Tafel Fit Residuals (RMSE = {tafel_result["rmse_mV"]:.1f} mV)',
+                      fontsize=10)
+        ax4.grid(True, alpha=0.3)
+    else:
+        ax4.text(0.5, 0.5, 'Tafel fit unavailable', ha='center', va='center',
+                 fontsize=12, color='gray', transform=ax4.transAxes)
+        ax4.set_title('Tafel Fit Residuals', fontsize=10)
 
     plt.tight_layout()
     if save_path:
@@ -2854,6 +3789,8 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
     eis_mapped = []
     fix_ASR = None
     eis_results_for_export = []
+    eis_fit_results = []
+    eis_circuit_by_cycle = {}
 
     if eis_files_list:
         print(f"\n  Loading {len(eis_files_list)} EIS file(s)...")
@@ -2904,6 +3841,40 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
 
             eis_results_for_export = eis_results_for_tracking
             plt.close('all')
+
+            # ── EIS equivalent circuit fitting ──
+            if eis_results_for_tracking:
+                print(f"\n  Fitting EIS equivalent circuit R₀-(R₁Q₁)-(R₂Q₂)...")
+                eis_fit_results = []
+                for ei, er in enumerate(eis_results_for_tracking):
+                    eis_data = er['eis_data']
+                    hfr_seed = er['hfr_ohm']
+                    dc_v = er.get('dc_v_mean')
+                    label = f"V_dc={dc_v:.3f}V" if dc_v else f"EIS {ei+1}"
+
+                    efr = fit_eis_circuit(eis_data, geo_area=geo_area,
+                                          hfr_seed=hfr_seed)
+                    if efr is not None:
+                        efr['dc_v'] = dc_v
+                        efr['label'] = label
+                        eis_fit_results.append(efr)
+                        print_eis_fit_summary(efr, geo_area=geo_area)
+
+                        if image_ext and save_dir:
+                            if len(eis_results_for_tracking) == 1:
+                                eis_fit_path = os.path.join(
+                                    save_dir, f'eis_fit.{image_ext}')
+                            else:
+                                safe = label.replace('=', '').replace(' ', '_')
+                                eis_fit_path = os.path.join(
+                                    save_dir, f'eis_fit_{safe}.{image_ext}')
+                            plot_eis_fit(eis_data, efr, geo_area=geo_area,
+                                         title=f'EIS Fit — {label}',
+                                         save_path=eis_fit_path)
+                            plt.close('all')
+
+                if not eis_fit_results:
+                    print("    No EIS spectra could be fitted")
 
     # ── Current-dependent EIS → iR correction per cycle ──
     ir_data_list = []
@@ -2959,8 +3930,116 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
                     save_path=eis_save)
                 plt.close('all')
 
+            # Fit equivalent circuit for each EIS in this group
+            for ei, e in enumerate(eis_at_j):
+                eis_data = e.get('eis_data')
+                if eis_data is None:
+                    continue
+                label = f"Cycle{cd_cyc_idx+1}_j={e['j']:.3f}"
+                efr = fit_eis_circuit(eis_data, geo_area=geo_area,
+                                      hfr_seed=e['hfr_ohm'])
+                if efr is not None:
+                    efr['dc_v'] = e.get('dc_v_eis')
+                    efr['j'] = e['j']
+                    efr['label'] = label
+                    eis_fit_results.append(efr)
+                    print_eis_fit_summary(efr, geo_area=geo_area)
+
+                    if image_ext and save_dir:
+                        safe = label.replace('=', '').replace(' ', '_')
+                        eis_fit_path = os.path.join(
+                            save_dir, f'eis_fit_{safe}.{image_ext}')
+                        plot_eis_fit(eis_data, efr, geo_area=geo_area,
+                                     title=f'EIS Fit — Cycle {cd_cyc_idx+1}, '
+                                           f'j = {e["j"]:.3f} A/cm²',
+                                     save_path=eis_fit_path)
+                        plt.close('all')
+
     # Legacy single ir_data for export (use first group if available)
     ir_data = ir_data_list if ir_data_list else None
+
+    # Build per-cycle circuit fit lookup for loss decomposition
+    from collections import defaultdict
+    eis_circuit_by_cycle = defaultdict(list)
+    for efr in eis_fit_results:
+        if efr.get('j') is not None:
+            # Find which cycle this fit belongs to by matching label
+            label = efr.get('label', '')
+            for ci in range(len(cycles)):
+                if f'Cycle{ci+1}_' in label:
+                    eis_circuit_by_cycle[ci].append(efr)
+                    break
+
+    # Update fix_ASR from circuit fits if available (R0+R1)
+    if eis_circuit_by_cycle:
+        r0r1_values = []
+        for ci, fits in eis_circuit_by_cycle.items():
+            for f in fits:
+                r0r1_values.append(f['R0_asr'] + f['R1_asr'])
+        if r0r1_values:
+            fix_ASR_eis = float(np.mean(r0r1_values))
+            print(f"\n  ASR from circuit fit (R₀+R₁): {fix_ASR_eis:.1f} mΩ·cm² "
+                  f"(was {fix_ASR:.1f} from HFR)" if fix_ASR else
+                  f"\n  ASR from circuit fit (R₀+R₁): {fix_ASR_eis:.1f} mΩ·cm²")
+            fix_ASR = fix_ASR_eis
+
+    # ── Transmission-line (coth) iR correction per cycle ──
+    coth_results = []
+    if eis_circuit_by_cycle:
+        print(f"\n  Transmission-line iR correction (coth model)...")
+        for ci, fits in sorted(eis_circuit_by_cycle.items()):
+            if len(fits) < 3:
+                continue
+
+            ref_cyc = cycles[ci]
+            j_pol = np.array([d['j'] for d in ref_cyc])
+            V_pol = np.array([d['V'] for d in ref_cyc])
+            mask = j_pol > 0
+            j_pol, V_pol = j_pol[mask], V_pol[mask]
+
+            if len(j_pol) < 3:
+                continue
+
+            # Sort by j
+            order = np.argsort(j_pol)
+            j_pol, V_pol = j_pol[order], V_pol[order]
+
+            cr = compute_coth_corrections(j_pol, V_pol, fits, geo_area=geo_area)
+
+            # Fit Tafel to fully corrected curve
+            tfr = fit_tafel_irfree(cr['j'], cr['V_irfree'], T_C=T_C,
+                                    p_cathode_barg=p_cathode_barg,
+                                    p_anode_barg=p_anode_barg)
+
+            if tfr is not None:
+                print(f"\n    Cycle {ci+1} Tafel fit:")
+                print(f"      j₀,a = {tfr['j0_a']:.2e} A/cm²")
+                print(f"      α_a  = {tfr['alpha_a']:.3f}")
+                print(f"      b_a  = {tfr['ba_mVdec']:.1f} mV/dec")
+                print(f"      j₀,c = {tfr['j0_c']:.2e} A/cm²")
+                print(f"      b_c  = {tfr['bc_mVdec']:.1f} mV/dec (fixed α_c=0.5)")
+                print(f"      c_mt = {tfr['c_mt']:.5f} V·cm⁴/A²")
+                print(f"      RMSE = {tfr['rmse_mV']:.1f} mV")
+
+            coth_results.append({
+                'cycle_idx': ci,
+                'coth_result': cr,
+                'tafel_result': tfr,
+                'eis_fits': fits,
+            })
+
+            if image_ext and save_dir:
+                if len(eis_circuit_by_cycle) == 1:
+                    coth_path = os.path.join(save_dir, f'coth_analysis.{image_ext}')
+                else:
+                    coth_path = os.path.join(save_dir,
+                                              f'coth_analysis_cycle{ci+1}.{image_ext}')
+                plot_coth_analysis(cr, tfr, fits, cycle_num=ci+1,
+                                    geo_area=geo_area, T_C=T_C,
+                                    p_cathode_barg=p_cathode_barg,
+                                    p_anode_barg=p_anode_barg,
+                                    save_path=coth_path)
+                plt.close('all')
 
     # ── Plot j/V and HFR vs cycle ──
     if len(cycles) >= 2:
@@ -2980,6 +4059,7 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
 
     # ── Loss breakdown vs cycle ──
     loss_data = None
+    eis_loss_data = None
     if len(cycles) >= 3:
         if is_galv:
             cn_loss, v_loss, losses = extract_losses_at_current(
@@ -3001,6 +4081,30 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
                 plot_j_and_losses_vs_cycle(cn_loss, j_loss, losses,
                                            v_target=v_primary, save_path=losses_path)
                 plt.close('all')
+
+    # ── EIS-based loss decomposition (when circuit fits available) ──
+    if eis_circuit_by_cycle and len(cycles) >= 2:
+        if is_galv:
+            cn_eis, v_eis, eis_losses = compute_eis_loss_decomposition(
+                cycles, eis_circuit_by_cycle, j_target=j_primary,
+                T_C=T_C, p_cathode_barg=p_cathode_barg,
+                p_anode_barg=p_anode_barg, geo_area=geo_area)
+            if len(cn_eis) >= 1:
+                eis_loss_data = (cn_eis, v_eis, eis_losses)
+                if image_ext and save_dir:
+                    eis_loss_path = os.path.join(save_dir,
+                                                  f'eis_losses_vs_cycle.{image_ext}')
+                    plot_eis_losses_vs_cycle(cn_eis, v_eis, eis_losses,
+                                             j_target=j_primary,
+                                             save_path=eis_loss_path)
+                    plt.close('all')
+        else:
+            cn_eis, j_eis, eis_losses = compute_eis_loss_decomposition(
+                cycles, eis_circuit_by_cycle, j_target=None,
+                T_C=T_C, p_cathode_barg=p_cathode_barg,
+                p_anode_barg=p_anode_barg, geo_area=geo_area)
+            # Potentiostatic EIS decomposition not yet implemented
+            pass
 
     # ── Fit last complete cycle ──
     fr = None
@@ -3042,7 +4146,10 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
                      loss_data=loss_data, fit_result=fr,
                      eis_results=eis_results_for_export if eis_results_for_export else None,
                      ir_data=ir_data,
-                     geo_area=geo_area)
+                     geo_area=geo_area,
+                     eis_fit_results=eis_fit_results if eis_fit_results else None,
+                     eis_loss_data=eis_loss_data,
+                     coth_results=coth_results if coth_results else None)
 
     return cycles, fr, eis_mapped
 
