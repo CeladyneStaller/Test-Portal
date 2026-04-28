@@ -1,0 +1,1778 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Analysis Portal</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #0b0f14;
+    --surface: #12171e;
+    --surface-raised: #1a2029;
+    --border: #262e3a;
+    --border-hover: #3a4555;
+    --text: #dfe5ed;
+    --text-dim: #6e7a8a;
+    --accent: #47b5ff;
+    --accent-glow: rgba(71, 181, 255, 0.08);
+    --accent-strong: rgba(71, 181, 255, 0.18);
+    --green: #4ade80;
+    --green-bg: rgba(74, 222, 128, 0.1);
+    --amber: #fbbf24;
+    --amber-bg: rgba(251, 191, 36, 0.1);
+    --red: #f87171;
+    --red-bg: rgba(248, 113, 113, 0.1);
+    --radius: 6px;
+    --font: 'Outfit', sans-serif;
+    --mono: 'IBM Plex Mono', monospace;
+  }
+
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Layout ─────────────────────────────────── */
+
+  .shell {
+    max-width: 700px;
+    margin: 0 auto;
+    padding: 56px 20px 80px;
+  }
+
+  header {
+    margin-bottom: 44px;
+    position: relative;
+  }
+
+  header::after {
+    content: '';
+    position: absolute;
+    bottom: -22px;
+    left: 0;
+    width: 36px;
+    height: 2px;
+    background: var(--accent);
+    border-radius: 1px;
+  }
+
+  header h1 {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.3px;
+    margin-bottom: 4px;
+  }
+
+  header .sub {
+    font-size: 13px;
+    color: var(--text-dim);
+    font-weight: 300;
+  }
+
+  /* ── Section ────────────────────────────────── */
+
+  .section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+
+  .section-head {
+    padding: 16px 20px;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .section-head .count {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--surface-raised);
+    padding: 2px 8px;
+    border-radius: 10px;
+    color: var(--text-dim);
+  }
+
+  .section-body { padding: 20px; }
+
+  /* ── Form ───────────────────────────────────── */
+
+  .field { margin-bottom: 18px; }
+
+  .field-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+    letter-spacing: 0.3px;
+  }
+
+  select {
+    width: 100%;
+    padding: 9px 12px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='%236e7a8a'%3E%3Cpath d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    transition: border-color 0.15s;
+  }
+
+  select:focus { outline: none; border-color: var(--accent); }
+  select:hover { border-color: var(--border-hover); }
+
+  /* ── Drop zone ──────────────────────────────── */
+
+  .drop {
+    border: 1.5px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 32px 20px;
+    text-align: center;
+    cursor: pointer;
+    position: relative;
+    transition: all 0.2s;
+  }
+
+  .drop:hover, .drop.over {
+    border-color: var(--accent);
+    background: var(--accent-glow);
+  }
+
+  .drop input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .drop-icon {
+    width: 36px;
+    height: 36px;
+    margin: 0 auto 10px;
+    border-radius: 8px;
+    background: var(--surface-raised);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+  }
+
+  .drop-text {
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .drop-text em {
+    color: var(--accent);
+    font-style: normal;
+    font-weight: 500;
+  }
+
+  /* ── File chips ─────────────────────────────── */
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    animation: chipIn 0.15s ease;
+  }
+
+  @keyframes chipIn {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
+  }
+
+  .chip .bytes { color: var(--text-dim); }
+
+  .chip button {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0;
+    transition: color 0.1s;
+  }
+
+  .chip button:hover { color: var(--red); }
+
+  /* ── Button ─────────────────────────────────── */
+
+  .btn-run {
+    width: 100%;
+    padding: 11px;
+    background: var(--accent);
+    border: none;
+    border-radius: var(--radius);
+    color: #fff;
+    font-family: var(--font);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter 0.12s, opacity 0.12s;
+    margin-top: 4px;
+  }
+
+  .btn-run:hover { filter: brightness(1.1); }
+
+  .btn-run:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+    filter: none;
+  }
+
+  /* ── Job cards ──────────────────────────────── */
+
+  .job {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    animation: slideUp 0.2s ease;
+  }
+
+  .job:last-child { border-bottom: none; }
+
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .job-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+
+  .job-id {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .job-sample {
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .job-script {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-dim);
+    padding: 1px 7px;
+    background: var(--surface-raised);
+    border-radius: 3px;
+  }
+
+  .tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 9px;
+    border-radius: 10px;
+  }
+
+  .tag-running  { background: var(--accent-strong); color: var(--accent); }
+  .tag-complete { background: var(--green-bg); color: var(--green); }
+  .tag-failed   { background: var(--red-bg); color: var(--red); }
+
+  .job-msg {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  .bar-track {
+    height: 2px;
+    background: var(--surface-raised);
+    border-radius: 1px;
+    overflow: hidden;
+    margin-bottom: 10px;
+  }
+
+  .bar-fill {
+    height: 100%;
+    width: 30%;
+    background: var(--accent);
+    border-radius: 1px;
+    animation: slide 1.8s ease-in-out infinite;
+  }
+
+  @keyframes slide {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(450%); }
+  }
+
+  .dl-row { display: flex; flex-wrap: wrap; gap: 6px; }
+
+  .dl-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 11px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    text-decoration: none;
+    transition: border-color 0.12s, color 0.12s;
+    cursor: pointer;
+  }
+
+  .dl-link:hover { border-color: var(--accent); color: var(--accent); }
+
+  .file-group {
+    display: inline-flex;
+    border-radius: 4px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+
+  .file-group .fg-view,
+  .file-group .fg-dl {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 10px;
+    background: var(--surface-raised);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    text-decoration: none;
+    cursor: pointer;
+    border: none;
+    transition: background 0.12s, color 0.12s;
+  }
+
+  .file-group .fg-view {
+    border-right: 1px solid var(--border);
+  }
+
+  .file-group .fg-view:hover {
+    background: var(--accent-glow);
+    color: var(--accent);
+  }
+
+  .file-group .fg-dl {
+    padding: 5px 8px;
+    font-size: 14px;
+  }
+
+  .file-group .fg-dl:hover {
+    background: var(--accent-glow);
+    color: var(--accent);
+  }
+
+  /* ── Lightbox ───────────────────────────────── */
+
+  .lightbox {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: rgba(0, 0, 0, 0.88);
+    backdrop-filter: blur(8px);
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .lightbox.open { display: flex; }
+
+  .lb-controls {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: linear-gradient(rgba(0,0,0,0.6), transparent);
+  }
+
+  .lb-title {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: rgba(255,255,255,0.7);
+  }
+
+  .lb-buttons {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .lb-dl {
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--accent);
+    text-decoration: none;
+    padding: 4px 12px;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    transition: background 0.15s;
+  }
+
+  .lb-dl:hover {
+    background: var(--accent-strong);
+  }
+
+  .lb-close {
+    background: none;
+    border: none;
+    color: rgba(255,255,255,0.7);
+    font-size: 28px;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0 4px;
+    transition: color 0.12s;
+  }
+
+  .lb-close:hover { color: #fff; }
+
+  .lightbox img {
+    max-width: 92vw;
+    max-height: 85vh;
+    object-fit: contain;
+    border-radius: 4px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+  }
+
+  .err-box {
+    margin-top: 8px;
+    padding: 10px 12px;
+    background: var(--red-bg);
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--red);
+    white-space: pre-wrap;
+    max-height: 160px;
+    overflow-y: auto;
+    line-height: 1.55;
+  }
+
+  /* ── Result groups ──────────────────────────── */
+
+  .result-group {
+    margin-bottom: 10px;
+  }
+
+  .result-group:last-child { margin-bottom: 0; }
+
+  .group-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+
+  .group-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--accent);
+  }
+
+  .dl-all {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    text-decoration: none;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    transition: all 0.12s;
+  }
+
+  .dl-all:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .dl-all-job {
+    margin-bottom: 10px;
+  }
+
+  .dl-all-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    background: var(--accent-glow);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    color: var(--accent);
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: none;
+    transition: all 0.15s;
+  }
+
+  .dl-all-btn:hover {
+    background: var(--accent-strong);
+    color: #fff;
+  }
+
+  .empty {
+    text-align: center;
+    padding: 28px;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+
+  /* ── Params grid ────────────────────────────── */
+
+  .params-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+
+  @media (max-width: 500px) {
+    .params-grid { grid-template-columns: 1fr; }
+  }
+
+  .params-grid .field { margin-bottom: 0; }
+
+  .params-grid input[type="number"],
+  .params-grid input[type="text"],
+  .params-grid select {
+    width: 100%;
+    padding: 9px 12px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    transition: border-color 0.15s;
+  }
+
+  .params-grid input[type="number"]:focus,
+  .params-grid input[type="text"]:focus,
+  .params-grid select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .params-grid input[type="number"]:hover,
+  .params-grid input[type="text"]:hover,
+  .params-grid select:hover {
+    border-color: var(--border-hover);
+  }
+
+  .params-head {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* ── Upload toggle ──────────────────────────── */
+
+  .upload-toggle {
+    display: flex;
+    gap: 0;
+    margin-bottom: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    width: fit-content;
+  }
+
+  .toggle-btn {
+    padding: 5px 16px;
+    background: var(--surface-raised);
+    border: none;
+    color: var(--text-dim);
+    font-family: var(--font);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .toggle-btn:not(:last-child) {
+    border-right: 1px solid var(--border);
+  }
+
+  .toggle-btn.active {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .toggle-btn:hover:not(.active) {
+    color: var(--text);
+  }
+
+  .folder-summary {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-top: 8px;
+    font-family: var(--mono);
+  }
+
+  .folder-summary strong {
+    color: var(--text);
+  }
+
+  /* ── Sample table ───────────────────────────── */
+
+  .sample-section { margin-bottom: 18px; }
+
+  .sample-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+
+  .sample-table th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sample-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sample-table td:last-child {
+    text-align: right;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .sample-table input {
+    width: 100%;
+    padding: 5px 8px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    transition: border-color 0.15s;
+  }
+
+  .sample-table input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .sample-folder {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .identify-btn {
+    width: 100%;
+    padding: 9px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--accent);
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-top: 8px;
+  }
+
+  .identify-btn:hover {
+    border-color: var(--accent);
+    background: var(--accent-glow);
+  }
+
+  /* ── Matched toggle ─────────────────────────── */
+
+  .matched-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    padding: 8px 0;
+  }
+
+  .matched-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-dim);
+  }
+
+  .toggle-switch {
+    position: relative;
+    width: 40px;
+    height: 22px;
+    cursor: pointer;
+  }
+
+  .toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+
+  .toggle-track {
+    position: absolute;
+    inset: 0;
+    background: var(--border);
+    border-radius: 11px;
+    transition: background 0.2s;
+  }
+
+  .toggle-track::after {
+    content: '';
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    left: 3px;
+    top: 3px;
+    background: var(--text-dim);
+    border-radius: 50%;
+    transition: all 0.2s;
+  }
+
+  .toggle-switch input:checked + .toggle-track {
+    background: var(--accent);
+  }
+
+  .toggle-switch input:checked + .toggle-track::after {
+    transform: translateX(18px);
+    background: #fff;
+  }
+
+  .sample-editor-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .sample-editor-row label {
+    margin-bottom: 0;
+    white-space: nowrap;
+  }
+
+  .sample-editor-row select {
+    flex: 1;
+    margin-bottom: 0;
+  }
+
+  /* ── Folder order list ──────────────────────── */
+
+  .folder-order-section {
+    margin-bottom: 18px;
+  }
+
+  .folder-order-head {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .folder-order-list {
+    list-style: none;
+  }
+
+  .folder-order-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-bottom: 4px;
+    cursor: grab;
+    transition: all 0.15s;
+    user-select: none;
+  }
+
+  .folder-order-item:active { cursor: grabbing; }
+
+  .folder-order-item.dragging {
+    opacity: 0.4;
+    border-color: var(--accent);
+  }
+
+  .folder-order-item.drag-over {
+    border-color: var(--accent);
+    background: var(--accent-glow);
+  }
+
+  .folder-order-num {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    min-width: 20px;
+    text-align: center;
+  }
+
+  .folder-order-grip {
+    color: var(--text-dim);
+    font-size: 14px;
+    cursor: grab;
+    line-height: 1;
+  }
+
+  .folder-order-name {
+    flex: 1;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text);
+  }
+
+  .folder-order-count {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header>
+    <h1>Analysis Portal</h1>
+    <p class="sub">Upload data files, run analysis, download results</p>
+  </header>
+
+  <!-- ─── Upload ─────────────────────────────── -->
+  <div class="section">
+    <div class="section-head">New Analysis</div>
+    <div class="section-body">
+
+      <div class="field">
+        <label class="field-label">Script</label>
+        <select id="sel">
+          <option value="" disabled selected>Loading...</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Data</label>
+        <div class="upload-toggle">
+          <button class="toggle-btn active" id="btn-files" onclick="setUploadMode('files')">Files</button>
+          <button class="toggle-btn" id="btn-folder" onclick="setUploadMode('folder')">Folder</button>
+          <button class="toggle-btn" id="btn-multi" onclick="setUploadMode('multi')">Multi-Sample</button>
+        </div>
+        <div class="drop" id="drop">
+          <input type="file" id="fi" multiple accept=".csv,.txt,.tsv,.fcd" style="display:block">
+          <input type="file" id="fi-folder" webkitdirectory style="display:none">
+          <input type="file" id="fi-multi" webkitdirectory style="display:none">
+          <div class="drop-icon">&#8593;</div>
+          <div class="drop-text" id="drop-text">Drop files here or <em>browse</em></div>
+        </div>
+        <div class="chips" id="chips"></div>
+        <button class="identify-btn" id="identify-btn" style="display:none" onclick="identifySamples()">Identify Samples</button>
+      </div>
+
+      <div id="folder-order-container" style="display:none">
+        <div class="folder-order-section">
+          <div class="folder-order-head">Folder Processing Order (drag to reorder)</div>
+          <ul class="folder-order-list" id="folder-order-list"></ul>
+        </div>
+      </div>
+
+      <div id="sample-container" style="display:none">
+        <div class="sample-section" id="sample-table-wrap"></div>
+        <div class="matched-row">
+          <span class="matched-label">All samples use same parameters?</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="all-matched" checked onchange="toggleAllMatched()">
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+        <div id="sample-editor" style="display:none">
+          <div class="sample-editor-row">
+            <label class="field-label" style="margin-bottom:0">Editing params for</label>
+            <select id="sample-select" onchange="switchEditingSample()"></select>
+          </div>
+        </div>
+      </div>
+
+      <div id="params-container"></div>
+
+      <button class="btn-run" id="go" disabled>Run Analysis</button>
+    </div>
+  </div>
+
+  <!-- ─── Jobs ───────────────────────────────── -->
+  <div class="section">
+    <div class="section-head">
+      Jobs
+      <span class="count" id="jc">0</span>
+    </div>
+    <div id="jlist">
+      <div class="empty">No jobs yet</div>
+    </div>
+  </div>
+
+  <!-- ─── Image Lightbox ──────────────────────── -->
+  <div class="lightbox" id="lightbox" onclick="closeLightbox(event)">
+    <div class="lb-controls">
+      <span class="lb-title" id="lb-title"></span>
+      <div class="lb-buttons">
+        <a class="lb-dl" id="lb-dl" download>&#8615; Download</a>
+        <button class="lb-close" onclick="closeLightbox()">&times;</button>
+      </div>
+    </div>
+    <img id="lb-img" src="" alt="">
+  </div>
+
+</div>
+
+<script>
+// ── State ───────────────────────────────────────
+let files = [];
+let polling = {};
+let scriptDefs = {};  // name → {description, params}
+
+// ── Load scripts ────────────────────────────────
+(async () => {
+  try {
+    const r = await fetch('/api/scripts');
+    const d = await r.json();
+    const s = document.getElementById('sel');
+    s.innerHTML = '<option value="" disabled selected>Select a script…</option>';
+    d.scripts.forEach(x => {
+      scriptDefs[x.name] = x;
+      const o = document.createElement('option');
+      o.value = x.name;
+      o.textContent = x.name;
+      o.title = x.description;
+      s.appendChild(o);
+    });
+  } catch(e) { console.error(e); }
+})();
+
+// ── Session job tracking ────────────────────────
+function saveJobId(id) {
+  const ids = JSON.parse(sessionStorage.getItem('myJobIds') || '[]');
+  if (!ids.includes(id)) ids.push(id);
+  sessionStorage.setItem('myJobIds', JSON.stringify(ids));
+}
+
+function getMyJobIds() {
+  return JSON.parse(sessionStorage.getItem('myJobIds') || '[]');
+}
+
+// ── Recover own jobs on page reload ─────────────
+(async () => {
+  try {
+    const ids = getMyJobIds();
+    for (const id of ids) {
+      try {
+        const r = await fetch(`/api/jobs/${id}`);
+        if (!r.ok) continue;
+        const j = await r.json();
+        renderJob(j.job_id, j);
+        if (j.status === 'running') {
+          polling[j.job_id] = setInterval(() => poll(j.job_id), 2000);
+        }
+      } catch(e) { /* job expired or deleted */ }
+    }
+  } catch(e) { console.error(e); }
+})();
+
+// ── File handling ───────────────────────────────
+let uploadMode = 'files';  // 'files', 'folder', or 'multi'
+let samples = [];  // [{folder, displayName, sampleName, files, params}]
+let orderedFolders = [];  // [{folder, displayName, files}] for durability ordering
+let allMatched = true;
+let editingSampleIdx = 0;
+
+// Scripts that process sequential folders as one analysis (not multi-sample)
+const SEQUENTIAL_FOLDER_SCRIPTS = ['Electrolyzer Durability'];
+
+const drop = document.getElementById('drop');
+const fi = document.getElementById('fi');
+const fiFolder = document.getElementById('fi-folder');
+const fiMulti = document.getElementById('fi-multi');
+
+function setUploadMode(mode) {
+  uploadMode = mode;
+  document.getElementById('btn-files').classList.toggle('active', mode === 'files');
+  document.getElementById('btn-folder').classList.toggle('active', mode === 'folder');
+  document.getElementById('btn-multi').classList.toggle('active', mode === 'multi');
+  fi.style.display = mode === 'files' ? 'block' : 'none';
+  fiFolder.style.display = mode === 'folder' ? 'block' : 'none';
+  fiMulti.style.display = mode === 'multi' ? 'block' : 'none';
+  const texts = {
+    files: 'Drop files here or <em>browse</em>',
+    folder: 'Select a folder or <em>browse</em>',
+    multi: 'Select parent folder containing sample subfolders',
+  };
+  document.getElementById('drop-text').innerHTML = texts[mode];
+  // Reset
+  files = [];
+  samples = [];
+  orderedFolders = [];
+  document.getElementById('identify-btn').style.display = 'none';
+  document.getElementById('sample-container').style.display = 'none';
+  document.getElementById('folder-order-container').style.display = 'none';
+  renderChips();
+}
+window.setUploadMode = setUploadMode;
+
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => {
+  e.preventDefault();
+  drop.classList.remove('over');
+  // Check if a folder was dropped
+  const items = e.dataTransfer.items;
+  if (items && items.length > 0) {
+    const entry = items[0].webkitGetAsEntry && items[0].webkitGetAsEntry();
+    if (entry && entry.isDirectory) {
+      setUploadMode('folder');
+      readDirectoryEntry(entry, entry.name);
+      return;
+    }
+  }
+  addFiles(e.dataTransfer.files);
+});
+
+fi.addEventListener('change', () => { addFiles(fi.files); fi.value = ''; });
+fiFolder.addEventListener('change', () => {
+  addFolderFiles(fiFolder.files);
+  fiFolder.value = '';
+  updateIdentifyBtn();
+});
+fiMulti.addEventListener('change', () => {
+  addFolderFiles(fiMulti.files);
+  fiMulti.value = '';
+  if (files.length > 0) {
+    document.getElementById('identify-btn').style.display = 'block';
+  }
+});
+
+// ── Read dropped folder recursively via Entry API ──
+function readDirectoryEntry(dirEntry, basePath) {
+  const reader = dirEntry.createReader();
+  const allEntries = [];
+
+  function readBatch() {
+    reader.readEntries(entries => {
+      if (entries.length === 0) {
+        // Done reading — process only data file entries
+        const fileEntries = allEntries.filter(e => e.isFile &&
+          DATA_EXTENSIONS.some(ext => e.name.toLowerCase().endsWith(ext)));
+        let pending = fileEntries.length;
+        if (pending === 0) { autoPopulateSampleName(); renderChips(); checkReady(); return; }
+        fileEntries.forEach(entry => {
+          entry.file(f => {
+            const path = basePath + '/' + entry.fullPath.split('/').slice(2).join('/');
+            const relPath = entry.fullPath.replace(/^\//, '');
+            files.push({ file: f, path: relPath });
+            pending--;
+            if (pending === 0) { autoPopulateSampleName(); renderChips(); checkReady(); }
+          });
+        });
+        // Also recurse into subdirectories
+        allEntries.filter(e => e.isDirectory).forEach(entry => {
+          readDirectoryEntry(entry, basePath);
+        });
+        return;
+      }
+      allEntries.push(...entries);
+      readBatch();
+    });
+  }
+  readBatch();
+}
+
+function addFiles(list) {
+  for (const f of list) {
+    if (!['.csv','.txt','.tsv','.fcd'].some(ext => f.name.toLowerCase().endsWith(ext))) continue;
+    if (files.some(x => x.path === f.name)) continue;
+    files.push({ file: f, path: f.name });
+  }
+  autoPopulateSampleName();
+  renderChips();
+}
+
+const DATA_EXTENSIONS = ['.csv', '.txt', '.tsv', '.fcd'];
+
+function addFolderFiles(list) {
+  files = [];
+  for (const f of list) {
+    const path = f.webkitRelativePath || f.name;
+    // Only include data files — skip images, tiffs, etc.
+    if (!DATA_EXTENSIONS.some(ext => f.name.toLowerCase().endsWith(ext))) continue;
+    files.push({ file: f, path: path });
+  }
+  autoPopulateSampleName();
+  renderChips();
+}
+
+function autoPopulateSampleName() {
+  const el = document.getElementById('param-sample_name');
+  if (!el || el.value.trim()) return; // don't overwrite user input
+  if (!files.length) return;
+
+  let name = '';
+  if (uploadMode === 'folder') {
+    // Use folder name
+    const parts = files[0].path.split('/');
+    if (parts.length > 1) name = parts[0];
+    else name = files[0].file.name.replace(/\.[^.]+$/, '');
+  } else {
+    // Use first filename without extension
+    name = files[0].file.name.replace(/\.[^.]+$/, '');
+  }
+  el.value = name.slice(0, 18);
+}
+
+function removeFile(i) { files.splice(i, 1); renderChips(); }
+
+function renderChips() {
+  const container = document.getElementById('chips');
+  if ((uploadMode === 'folder' || uploadMode === 'multi') && files.length > 0) {
+    const folders = new Set(files.map(f => f.path.split('/')[0]));
+    const folderName = [...folders][0] || 'folder';
+    const exts = {};
+    files.forEach(f => {
+      const ext = f.path.split('.').pop().toLowerCase();
+      exts[ext] = (exts[ext] || 0) + 1;
+    });
+    const extSummary = Object.entries(exts).map(([e, n]) => `${n} .${e}`).join(', ');
+    container.innerHTML = `
+      <div class="folder-summary">
+        <strong>${esc(folderName)}/</strong> — ${files.length} files (${extSummary})
+        <button class="remove" onclick="files=[];samples=[];document.getElementById('sample-container').style.display='none';document.getElementById('identify-btn').style.display='none';renderChips();" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;vertical-align:middle;">&times;</button>
+      </div>`;
+  } else {
+    container.innerHTML = files.map((f, i) =>
+      `<span class="chip">
+        ${esc(f.file.name)} <span class="bytes">${fmt(f.file.size)}</span>
+        <button onclick="removeFile(${i})">&times;</button>
+      </span>`
+    ).join('');
+  }
+  checkReady();
+}
+
+function checkReady() {
+  const hasScript = document.getElementById('sel').value;
+  const script = document.getElementById('sel').value;
+  const isSeq = SEQUENTIAL_FOLDER_SCRIPTS.includes(script);
+
+  if (uploadMode === 'multi' && samples.length > 0) {
+    document.getElementById('go').disabled = !hasScript;
+  } else if (uploadMode === 'folder' && isSeq && orderedFolders.length > 0) {
+    document.getElementById('go').disabled = !hasScript;
+  } else {
+    document.getElementById('go').disabled = !(hasScript && files.length > 0);
+  }
+}
+
+// ── Multi-sample functions ─────────────────────────
+function updateIdentifyBtn() {
+  const script = document.getElementById('sel').value;
+  const btn = document.getElementById('identify-btn');
+  const isSeq = SEQUENTIAL_FOLDER_SCRIPTS.includes(script);
+
+  if ((uploadMode === 'folder' && isSeq && files.length > 0) ||
+      (uploadMode === 'multi' && files.length > 0)) {
+    btn.style.display = 'block';
+    btn.textContent = isSeq && uploadMode === 'folder' ? 'Identify Folders' : 'Identify Samples';
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
+function identifySamples() {
+  if (!files.length) return;
+
+  const script = document.getElementById('sel').value;
+  const isSeq = SEQUENTIAL_FOLDER_SCRIPTS.includes(script);
+
+  // Find the parent folder (first path component)
+  const parentFolder = files[0].path.split('/')[0];
+
+  // Group files by second-level subfolder
+  const sampleMap = {};
+  for (const f of files) {
+    const parts = f.path.split('/');
+    if (parts.length < 3) continue;
+    const subFolder = parts[1];
+    const folderPrefix = parts[0] + '/' + parts[1];
+    if (!sampleMap[folderPrefix]) {
+      sampleMap[folderPrefix] = {
+        folder: folderPrefix,
+        displayName: subFolder,
+        sampleName: subFolder.slice(0, 18),
+        files: [],
+        params: {},
+      };
+    }
+    sampleMap[folderPrefix].files.push(f);
+  }
+
+  const detected = Object.values(sampleMap).sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+  if (detected.length === 0) {
+    alert('No subfolders found. Make sure the parent folder contains subfolders.');
+    return;
+  }
+
+  document.getElementById('identify-btn').style.display = 'none';
+
+  if (isSeq && uploadMode === 'folder') {
+    // Sequential folder ordering mode (durability)
+    orderedFolders = detected.map(s => ({
+      folder: s.folder,
+      displayName: s.displayName,
+      files: s.files,
+    }));
+    document.getElementById('folder-order-container').style.display = 'block';
+    document.getElementById('sample-container').style.display = 'none';
+    renderFolderOrder();
+  } else {
+    // Multi-sample mode
+    samples = detected;
+    const shared = collectParams();
+    samples.forEach(s => { s.params = {...shared}; });
+    document.getElementById('sample-container').style.display = 'block';
+    document.getElementById('folder-order-container').style.display = 'none';
+    renderSampleTable();
+  }
+  checkReady();
+}
+window.identifySamples = identifySamples;
+
+// ── Folder ordering (drag-and-drop) ────────────
+let dragIdx = null;
+
+function renderFolderOrder() {
+  const list = document.getElementById('folder-order-list');
+  list.innerHTML = orderedFolders.map((f, i) => `
+    <li class="folder-order-item" draggable="true"
+        ondragstart="folderDragStart(event,${i})"
+        ondragover="folderDragOver(event,${i})"
+        ondragleave="folderDragLeave(event)"
+        ondrop="folderDrop(event,${i})"
+        ondragend="folderDragEnd()">
+      <span class="folder-order-grip">&#9776;</span>
+      <span class="folder-order-num">${i + 1}</span>
+      <span class="folder-order-name">${esc(f.displayName)}/</span>
+      <span class="folder-order-count">${f.files.length} files</span>
+    </li>
+  `).join('');
+}
+
+function folderDragStart(e, idx) {
+  dragIdx = idx;
+  e.currentTarget.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+}
+
+function folderDragOver(e, idx) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  if (idx !== dragIdx) {
+    e.currentTarget.classList.add('drag-over');
+  }
+}
+
+function folderDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+
+function folderDrop(e, dropIdx) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  if (dragIdx === null || dragIdx === dropIdx) return;
+
+  // Move item from dragIdx to dropIdx
+  const item = orderedFolders.splice(dragIdx, 1)[0];
+  orderedFolders.splice(dropIdx, 0, item);
+  renderFolderOrder();
+}
+
+function folderDragEnd() {
+  dragIdx = null;
+  document.querySelectorAll('.folder-order-item').forEach(el => {
+    el.classList.remove('dragging', 'drag-over');
+  });
+}
+
+// Expose to inline handlers
+window.folderDragStart = folderDragStart;
+window.folderDragOver = folderDragOver;
+window.folderDragLeave = folderDragLeave;
+window.folderDrop = folderDrop;
+window.folderDragEnd = folderDragEnd;
+
+function renderSampleTable() {
+  const wrap = document.getElementById('sample-table-wrap');
+  let html = `<table class="sample-table">
+    <thead><tr>
+      <th>Folder</th>
+      <th>Sample Name</th>
+      <th>Files</th>
+    </tr></thead><tbody>`;
+  samples.forEach((s, i) => {
+    html += `<tr>
+      <td><span class="sample-folder">${esc(s.displayName)}/</span></td>
+      <td><input type="text" value="${esc(s.sampleName)}" onchange="samples[${i}].sampleName=this.value"></td>
+      <td>${s.files.length}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+
+  // Update per-sample dropdown
+  const sel = document.getElementById('sample-select');
+  sel.innerHTML = samples.map((s, i) =>
+    `<option value="${i}">${esc(s.sampleName || s.displayName)}</option>`
+  ).join('');
+}
+
+function toggleAllMatched() {
+  allMatched = document.getElementById('all-matched').checked;
+  document.getElementById('sample-editor').style.display = allMatched ? 'none' : 'block';
+
+  if (!allMatched) {
+    // Copy current shared params to all samples that haven't been customized
+    const shared = collectParams();
+    samples.forEach(s => {
+      if (Object.keys(s.params).length === 0) {
+        s.params = {...shared};
+      }
+    });
+    // Load first sample's params into the panel
+    editingSampleIdx = 0;
+    document.getElementById('sample-select').value = '0';
+    loadSampleParams(0);
+  }
+}
+window.toggleAllMatched = toggleAllMatched;
+
+function switchEditingSample() {
+  // Save current params before switching
+  if (!allMatched && samples[editingSampleIdx]) {
+    samples[editingSampleIdx].params = collectParams();
+  }
+  editingSampleIdx = parseInt(document.getElementById('sample-select').value);
+  loadSampleParams(editingSampleIdx);
+}
+window.switchEditingSample = switchEditingSample;
+
+function loadSampleParams(idx) {
+  const s = samples[idx];
+  if (!s) return;
+  // Set each param field to this sample's value
+  document.querySelectorAll('[data-param]').forEach(el => {
+    const key = el.dataset.param;
+    if (key === 'sample_name') {
+      el.value = s.sampleName;
+    } else if (key in s.params) {
+      el.value = s.params[key];
+    }
+  });
+}
+
+function buildMultiManifest() {
+  // Save current editing sample's params if in per-sample mode
+  if (!allMatched && samples[editingSampleIdx]) {
+    samples[editingSampleIdx].params = collectParams();
+  }
+
+  const shared = allMatched ? collectParams() : null;
+  return samples.map(s => ({
+    folder: s.folder,
+    sample_name: s.sampleName,
+    params: allMatched ? {...shared, sample_name: s.sampleName} : {...s.params, sample_name: s.sampleName},
+  }));
+}
+
+document.getElementById('sel').addEventListener('change', () => {
+  checkReady();
+  renderParams();
+  autoPopulateSampleName();
+  updateIdentifyBtn();
+});
+
+function renderParams() {
+  const container = document.getElementById('params-container');
+  const script = document.getElementById('sel').value;
+  const def = scriptDefs[script];
+
+  if (!def || !def.params || def.params.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  let html = '<div class="params-head">Parameters</div><div class="params-grid">';
+  for (const p of def.params) {
+    html += '<div class="field">';
+    html += `<label class="field-label">${esc(p.label)}</label>`;
+
+    if (p.type === 'select') {
+      html += `<select id="param-${p.key}" data-param="${p.key}">`;
+      for (const opt of p.options) {
+        const sel = opt.value === String(p.default) ? ' selected' : '';
+        html += `<option value="${opt.value}"${sel}>${esc(opt.label)}</option>`;
+      }
+      html += '</select>';
+    } else if (p.type === 'text') {
+      html += `<input type="text" id="param-${p.key}" data-param="${p.key}" value="${p.default || ''}">`;
+    } else {
+      const attrs = [
+        `type="number"`,
+        `id="param-${p.key}"`,
+        `data-param="${p.key}"`,
+        `value="${p.default}"`,
+      ];
+      if (p.step !== undefined) attrs.push(`step="${p.step}"`);
+      if (p.min !== undefined) attrs.push(`min="${p.min}"`);
+      if (p.max !== undefined) attrs.push(`max="${p.max}"`);
+      html += `<input ${attrs.join(' ')}>`;
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function collectParams() {
+  const params = {};
+  document.querySelectorAll('[data-param]').forEach(el => {
+    params[el.dataset.param] = el.value;
+  });
+  return params;
+}
+
+function fmt(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+  return (b/1048576).toFixed(1) + ' MB';
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// ── Zip helper ──────────────────────────────────
+async function buildZipBlob(fileList, progressFn) {
+  const zip = new JSZip();
+  for (const f of fileList) {
+    zip.file(f.path, f.file);
+  }
+  return await zip.generateAsync(
+    { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
+    meta => { if (progressFn) progressFn(meta.percent); }
+  );
+}
+
+// ── Submit ──────────────────────────────────────
+document.getElementById('go').addEventListener('click', async () => {
+  const script = document.getElementById('sel').value;
+  if (!script) return;
+
+  const btn = document.getElementById('go');
+  btn.disabled = true;
+
+  try {
+    const isSeq = SEQUENTIAL_FOLDER_SCRIPTS.includes(script);
+
+    // Determine if we should zip (folder/multi modes with many files)
+    const shouldZip = files.length > 10 || uploadMode !== 'files';
+
+    if (uploadMode === 'multi' && samples.length > 0) {
+      // Multi-sample: single upload, multiple jobs
+      btn.textContent = shouldZip ? 'Compressing…' : 'Uploading…';
+      const fd = new FormData();
+      fd.append('script', script);
+      fd.append('manifest', JSON.stringify(buildMultiManifest()));
+
+      if (shouldZip) {
+        const zipBlob = await buildZipBlob(files, pct => {
+          btn.textContent = `Compressing… ${Math.round(pct)}%`;
+        });
+        fd.append('zipfile', zipBlob, 'upload.zip');
+        btn.textContent = 'Uploading…';
+      } else {
+        files.forEach(f => fd.append('files', f.file, f.path));
+      }
+
+      const r = await fetch('/api/upload-multi', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!r.ok) { alert(d.detail || 'Upload failed'); return; }
+
+      (d.jobs || []).forEach(j => {
+        saveJobId(j.job_id);
+        renderJob(j.job_id, { status: 'running', message: `Running ${script} on ${j.sample_name}…`, script: script });
+        polling[j.job_id] = setInterval(() => poll(j.job_id), 2000);
+      });
+
+      files = []; samples = [];
+      document.getElementById('sample-container').style.display = 'none';
+      renderChips();
+
+    } else if (uploadMode === 'folder' && isSeq && orderedFolders.length > 0) {
+      // Sequential folder ordering: single job with folder_order param
+      if (!files.length) return;
+      btn.textContent = shouldZip ? 'Compressing…' : 'Uploading…';
+      const params = collectParams();
+      params.folder_order = orderedFolders.map(f => f.folder);
+
+      const fd = new FormData();
+      fd.append('script', script);
+      fd.append('params', JSON.stringify(params));
+
+      if (shouldZip) {
+        const zipBlob = await buildZipBlob(files, pct => {
+          btn.textContent = `Compressing… ${Math.round(pct)}%`;
+        });
+        fd.append('zipfile', zipBlob, 'upload.zip');
+        btn.textContent = 'Uploading…';
+      } else {
+        files.forEach(f => fd.append('files', f.file, f.path));
+      }
+
+      const r = await fetch('/api/upload', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!r.ok) { alert(d.detail || 'Upload failed'); return; }
+
+      saveJobId(d.job_id);
+      renderJob(d.job_id, { status: 'running', message: `Running ${script}…` });
+      polling[d.job_id] = setInterval(() => poll(d.job_id), 2000);
+
+      files = []; orderedFolders = [];
+      document.getElementById('folder-order-container').style.display = 'none';
+      renderChips();
+
+    } else {
+      // Single job: files or folder mode
+      if (!files.length) return;
+      btn.textContent = shouldZip ? 'Compressing…' : 'Uploading…';
+
+      const fd = new FormData();
+      fd.append('script', script);
+      fd.append('params', JSON.stringify(collectParams()));
+
+      if (shouldZip) {
+        const zipBlob = await buildZipBlob(files, pct => {
+          btn.textContent = `Compressing… ${Math.round(pct)}%`;
+        });
+        fd.append('zipfile', zipBlob, 'upload.zip');
+        btn.textContent = 'Uploading…';
+      } else {
+        files.forEach(f => fd.append('files', f.file, f.path));
+      }
+
+      const r = await fetch('/api/upload', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!r.ok) { alert(d.detail || 'Upload failed'); return; }
+
+      saveJobId(d.job_id);
+      renderJob(d.job_id, { status: 'running', message: `Running ${script}…` });
+      polling[d.job_id] = setInterval(() => poll(d.job_id), 2000);
+
+      files = [];
+      renderChips();
+    }
+  } catch(e) {
+    alert('Error: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run Analysis';
+    checkReady();
+  }
+});
+
+// ── Polling ─────────────────────────────────────
+async function poll(id) {
+  try {
+    const r = await fetch(`/api/jobs/${id}`);
+    const d = await r.json();
+    renderJob(id, d);
+    if (d.status === 'complete' || d.status === 'failed') {
+      clearInterval(polling[id]);
+      delete polling[id];
+    }
+  } catch(e) { console.error(e); }
+}
+
+// ── Render job ──────────────────────────────────
+function renderFileLink(jobId, f) {
+  const url = `/api/download/${jobId}/${f}`;
+  const name = f.includes('/') ? f.split('/').pop() : f;
+  const isImg = /\.(png|jpg|jpeg)$/i.test(f);
+
+  if (isImg) {
+    return `<span class="file-group">
+      <button class="fg-view" onclick="openLightbox('${url}','${esc(name)}')">&#128200; ${esc(name)}</button>
+      <a class="fg-dl" href="${url}" download title="Download">&#8615;</a>
+    </span>`;
+  } else {
+    const ico = /\.xlsx?$/i.test(f) ? '&#128202;' : '&#128196;';
+    return `<a class="dl-link" href="${url}" download>${ico} ${esc(name)}</a>`;
+  }
+}
+
+function renderJob(id, d) {
+  const c = document.getElementById('jlist');
+  const em = c.querySelector('.empty');
+  if (em) em.remove();
+
+  let el = document.getElementById('j-' + id);
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'j-' + id;
+    el.className = 'job';
+    c.prepend(el);
+  }
+
+  const active = d.status === 'running';
+  const tagCls = d.status === 'complete' ? 'tag-complete' : d.status === 'failed' ? 'tag-failed' : 'tag-running';
+
+  let dlHtml = '';
+  const groups = d.output_groups;
+  if (groups && Object.keys(groups).length > 0) {
+    const groupNames = Object.keys(groups);
+    dlHtml = groupNames.map(label => {
+      const filesInGroup = groups[label];
+      if (!filesInGroup || !filesInGroup.length) return '';
+      const header = `<div class="group-header">
+        <span class="group-label">${esc(label)}</span>
+        <a class="dl-all" href="/api/download-zip/${id}?group=${encodeURIComponent(label)}" download title="Download all as ZIP">&#8615; Download All</a>
+      </div>`;
+      const links = '<div class="dl-row">' + filesInGroup.map(f => {
+        return renderFileLink(id, f);
+      }).join('') + '</div>';
+      return `<div class="result-group">${header}${links}</div>`;
+    }).join('');
+  } else if (d.output_files && d.output_files.length) {
+    dlHtml = '<div class="dl-row">' + d.output_files.map(f => {
+      return renderFileLink(id, f);
+    }).join('') + '</div>';
+  }
+
+  let errHtml = '';
+  if (d.status === 'failed' && d.error) {
+    errHtml = `<div class="err-box">${esc(d.error)}</div>`;
+  }
+
+  // Download All button for the entire job
+  let dlAllHtml = '';
+  if (d.output_files && d.output_files.length > 0 && d.status === 'complete') {
+    dlAllHtml = `<div class="dl-all-job">
+      <a class="dl-all-btn" href="/api/download-zip/${id}" download>&#8615; Download All Results</a>
+    </div>`;
+  }
+
+  const sampleLabel = d.sample_name ? `<span class="job-sample">${esc(d.sample_name)}</span>` : '';
+  const scriptLabel = d.script ? `<span class="job-script">${esc(d.script)}</span>` : '';
+
+  el.innerHTML = `
+    <div class="job-row">
+      <span class="job-id">${sampleLabel}${scriptLabel}${esc(id)}</span>
+      <span class="tag ${tagCls}">${d.status}</span>
+    </div>
+    ${active ? '<div class="bar-track"><div class="bar-fill"></div></div>' : ''}
+    <div class="job-msg">${esc(d.message || '')}</div>
+    ${dlAllHtml}${dlHtml}${errHtml}
+  `;
+
+  document.getElementById('jc').textContent = c.querySelectorAll('.job').length;
+}
+
+// ── Lightbox ────────────────────────────────────
+function openLightbox(url, name) {
+  const lb = document.getElementById('lightbox');
+  const img = document.getElementById('lb-img');
+  const title = document.getElementById('lb-title');
+  const dl = document.getElementById('lb-dl');
+
+  img.src = url;
+  title.textContent = name;
+  dl.href = url;
+  dl.download = name;
+  lb.classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeLightbox(e) {
+  if (e && e.target.tagName === 'IMG') return; // don't close when clicking the image
+  if (e && e.target.closest('.lb-controls')) return; // don't close when clicking controls
+  document.getElementById('lightbox').classList.remove('open');
+  document.getElementById('lb-img').src = '';
+  document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeLightbox();
+});
+</script>
+</body>
+</html>
