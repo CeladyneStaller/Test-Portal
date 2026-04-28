@@ -4099,10 +4099,6 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
                                              save_path=eis_loss_path)
                     plt.close('all')
         else:
-            cn_eis, j_eis, eis_losses = compute_eis_loss_decomposition(
-                cycles, eis_circuit_by_cycle, j_target=None,
-                T_C=T_C, p_cathode_barg=p_cathode_barg,
-                p_anode_barg=p_anode_barg, geo_area=geo_area)
             # Potentiostatic EIS decomposition not yet implemented
             pass
 
