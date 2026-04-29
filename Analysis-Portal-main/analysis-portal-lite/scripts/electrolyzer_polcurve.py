@@ -1132,7 +1132,7 @@ def plot_v_vs_cycle(cycles, j_targets, save_path=None):
 
 def plot_v_and_hfr_vs_cycle(cycles, j_targets, eis_mapped, save_path=None):
     """
-    Dual-axis: V at j targets (left) and ASR from HFR (right) vs cycle.
+    Dual-axis: V at j targets (left) and ASR (R₀+R₁) (right) vs cycle.
     Galvanostatic counterpart to plot_j_and_hfr_vs_cycle.
     """
     fig, ax1 = plt.subplots(figsize=(10, 5.5), dpi=120)
@@ -1169,8 +1169,8 @@ def plot_v_and_hfr_vs_cycle(cycles, j_targets, eis_mapped, save_path=None):
     eis_cn = [e['cycle'] for e in eis_mapped]
     eis_asr = [e['asr_mohm_cm2'] for e in eis_mapped]
     ax2.plot(eis_cn, eis_asr, 'v--', color='#9467bd', ms=5, lw=1.2,
-             label='ASR (HFR)', alpha=0.8)
-    ax2.set_ylabel('ASR  [mΩ·cm²]', fontsize=12, color='#9467bd')
+             label='ASR (R₀+R₁)', alpha=0.8)
+    ax2.set_ylabel('ASR (R₀+R₁)  [mΩ·cm²]', fontsize=12, color='#9467bd')
     ax2.tick_params(axis='y', labelcolor='#9467bd')
 
     lines1, labels1 = ax1.get_legend_handles_labels()
@@ -1180,7 +1180,7 @@ def plot_v_and_hfr_vs_cycle(cycles, j_targets, eis_mapped, save_path=None):
                ncol=min(len(lines1) + len(lines2), 5), fontsize=9,
                frameon=True, fancybox=True)
 
-    ax1.set_title('Voltage & HFR vs. Cycle', fontsize=12, fontweight='bold')
+    ax1.set_title('Voltage & ASR vs. Cycle', fontsize=12, fontweight='bold')
     plt.tight_layout()
     plt.subplots_adjust(bottom=0.18)
     if save_path:
@@ -1526,7 +1526,7 @@ def export_excel(filepath, cycles, v_targets=[1.8, 1.7], j_targets=None,
     Sheets:
       - Polcurve Data: cycle, V, j for every setpoint in every cycle
       - j vs Cycle / V vs Cycle: tracking at target voltages or currents
-      - HFR vs Cycle: cycle number, ASR from EIS (if available)
+      - ASR vs Cycle: cycle number, ASR (R₀+R₁) from EIS (if available)
       - Losses vs Cycle: per-cycle fitted loss breakdown
       - Model Fit: last cycle fit — data, model, residuals, components
       - EIS: frequency, Z', -Z'' for each EIS measurement
@@ -1624,9 +1624,9 @@ def export_excel(filepath, cycles, v_targets=[1.8, 1.7], j_targets=None,
             ws2.append([f'{vt:.2f} V',
                         f'Stable @ cycle {sc}' if sc else 'Not stabilized'])
 
-    # ── Sheet 3: HFR vs Cycle ──
+    # ── Sheet 3: ASR vs Cycle ──
     if eis_mapped:
-        ws3 = wb.create_sheet("HFR vs Cycle")
+        ws3 = wb.create_sheet("ASR vs Cycle")
         ws3.append(['Cycle', 'ASR [mΩ·cm²]', 'Elapsed Time [s]'])
         for em in eis_mapped:
             ws3.append([em['cycle'], round(em['asr_mohm_cm2'], 2),
@@ -1762,7 +1762,7 @@ def export_excel(filepath, cycles, v_targets=[1.8, 1.7], j_targets=None,
                     round(ir_drop, 2),
                 ])
             ws7.append([])
-            ws7.append(['HFR Measurements'])
+            ws7.append(['R₀+R₁ Measurements'])
             ws7.append(['j [A/cm²]', 'ASR [mΩ·cm²]'])
             for i in range(len(ir_entry['j_hfr'])):
                 ws7.append([round(ir_entry['j_hfr'][i], 6),
@@ -1874,7 +1874,7 @@ def export_excel(filepath, cycles, v_targets=[1.8, 1.7], j_targets=None,
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  EIS loading & HFR analysis
+#  EIS loading & EIS analysis
 # ═══════════════════════════════════════════════════════════════════
 
 def detect_eis_columns(fieldnames):
@@ -2049,8 +2049,8 @@ def extract_hfr(eis, geo_area=5.0):
     asr = hfr * geo_area
     asr_m = asr * 1000
 
-    print(f"\n  HFR Analysis:")
-    print(f"    HFR           : {hfr*1000:.3f} mΩ  ({hfr:.6f} Ω)")
+    print(f"\n  EIS HFR Analysis (seed for circuit fit):")
+    print(f"    R₀+R₁ (approx): {hfr*1000:.3f} mΩ  ({hfr:.6f} Ω)")
     print(f"    ASR           : {asr_m:.1f} mΩ·cm²  ({asr:.4f} Ω·cm²)")
     print(f"    Intercept freq: {f_hfr:.0f} Hz")
 
@@ -2122,7 +2122,7 @@ def fit_eis_circuit(eis, geo_area=5.0, hfr_seed=None):
     zre_s = zre[order]
     zim_s = zim[order]  # -Z'': positive during arcs, ~0 at intercepts
 
-    # ── Find R₀+R₁ constraint from HFR intercept ──
+    # ── Find R₀+R₁ constraint from EIS intercept ──
     # Uses the same rules as extract_hfr:
     #   1. Z'' zero crossing (inductive→capacitive or between arcs)
     #   2. If crossing freq < 1500 Hz, fall back to Z' at ~1000 Hz
@@ -2379,7 +2379,7 @@ def plot_eis_fit(eis, fit_result, geo_area=5.0, title=None, save_path=None):
 
 
 def plot_nyquist(eis, hfr_result, geo_area=5.0, save_path=None):
-    """Nyquist plot with HFR intercept marked."""
+    """Nyquist plot with R₀+R₁ intercept marked."""
     zre = eis['zre'] * geo_area * 1000   # → mΩ·cm²
     zim = eis['zim'] * geo_area * 1000
 
@@ -2387,11 +2387,11 @@ def plot_nyquist(eis, hfr_result, geo_area=5.0, save_path=None):
 
     ax.plot(zre, zim, 'o-', ms=4, lw=1.2, color='#1f77b4')
 
-    # Mark HFR intercept
+    # Mark R₀+R₁ intercept
     hfr_asr = hfr_result['asr_mohm_cm2']
     ax.plot(hfr_asr, 0, '*', ms=14, color='#d62728', markeredgecolor='k',
             markeredgewidth=0.8, zorder=5,
-            label=f'HFR = {hfr_asr:.1f} mΩ·cm²')
+            label=f'R₀+R₁ = {hfr_asr:.1f} mΩ·cm²')
 
     ax.axhline(0, color='k', lw=0.5, alpha=0.5)
     ax.set_xlabel("Z'  [mΩ·cm²]", fontsize=12)
@@ -2414,8 +2414,8 @@ def plot_eis_for_ir_correction(eis_at_j, geo_area=5.0, cycle_num=None,
                                 save_path=None):
     """
     Two-panel figure showing EIS data used for iR correction:
-      Left  — Overlaid Nyquist curves colored by current density, HFR marked
-      Right — ASR (HFR) vs current density
+      Left  — Overlaid Nyquist curves colored by current density, R₀+R₁ marked
+      Right — ASR (R₀+R₁) vs current density
     """
     if not eis_at_j:
         return None
@@ -2442,7 +2442,7 @@ def plot_eis_for_ir_correction(eis_at_j, geo_area=5.0, cycle_num=None,
         ax1.plot(zre, zim, 'o-', ms=3, lw=1.0, color=cmap[i],
                  label=f'j = {e["j"]:.3f} A/cm²')
 
-        # Mark HFR intercept
+        # Mark R₀+R₁ intercept
         hfr_asr = e['asr_mohm_cm2']
         ax1.plot(hfr_asr, 0, 's', ms=7, color=cmap[i],
                  markeredgecolor='k', markeredgewidth=0.6, zorder=5)
@@ -2471,8 +2471,8 @@ def plot_eis_for_ir_correction(eis_at_j, geo_area=5.0, cycle_num=None,
     ax2.plot(j_vals, asr_vals, 'o-', ms=7, lw=1.5, color='#d62728',
              markeredgecolor='k', markeredgewidth=0.5)
     ax2.set_xlabel('Current density  j  [A/cm²]', fontsize=11)
-    ax2.set_ylabel('ASR (HFR)  [mΩ·cm²]', fontsize=11)
-    ax2.set_title('HFR vs. Current Density', fontsize=10)
+    ax2.set_ylabel('ASR (R₀+R₁)  [mΩ·cm²]', fontsize=11)
+    ax2.set_title('ASR (R₀+R₁) vs. Current Density', fontsize=10)
     ax2.set_xlim(left=0)
     ax2.grid(True, alpha=0.3)
     ax2.ticklabel_format(axis='y', useOffset=False)
@@ -2545,9 +2545,9 @@ def scan_folder(folder_path, cell_id='a1'):
 
 def load_all_eis(eis_files, geo_area=5.0):
     """
-    Load multiple EIS files, extract HFR from each.
+    Load multiple EIS files, extract R₀+R₁ from each.
 
-    Returns list of dicts with HFR results + timestamp + DC voltage,
+    Returns list of dicts with EIS results + timestamp + DC voltage,
     sorted by time.
     """
     results = []
@@ -2624,7 +2624,7 @@ def map_eis_to_cycles(eis_results, cycles):
 
 def plot_j_and_hfr_vs_cycle(cycles, v_targets, eis_mapped, save_path=None):
     """
-    Dual-axis plot: j at target voltages (left) and ASR from HFR (right)
+    Dual-axis plot: j at target voltages (left) and ASR (R₀+R₁) (right)
     vs cycle number.
     """
     fig, ax1 = plt.subplots(figsize=(10, 5.5), dpi=120)
@@ -2668,13 +2668,13 @@ def plot_j_and_hfr_vs_cycle(cycles, v_targets, eis_mapped, save_path=None):
     ax1.set_xlim(left=0)
     ax1.grid(True, alpha=0.3)
 
-    # ── Right axis: ASR from HFR ──
+    # ── Right axis: ASR (R₀+R₁) ──
     if eis_mapped:
         cyc_nums = [em['cycle'] for em in eis_mapped]
         asr_vals = [em['asr_mohm_cm2'] for em in eis_mapped]
         ax2.plot(cyc_nums, asr_vals, 'v--', color='#9467bd', ms=8, lw=1.5,
                  markeredgecolor='k', markeredgewidth=0.5,
-                 label='ASR (HFR)')
+                 label='ASR (R₀+R₁)')
         ax2.set_ylabel('ASR  [mΩ·cm²]', fontsize=12, color='#9467bd')
         ax2.tick_params(axis='y', labelcolor='#9467bd')
 
@@ -2686,7 +2686,7 @@ def plot_j_and_hfr_vs_cycle(cycles, v_targets, eis_mapped, save_path=None):
                ncol=len(lines1) + len(lines2), fontsize=9,
                frameon=True, fancybox=True)
 
-    ax1.set_title('Current Density & HFR vs. Cycle', fontsize=12, fontweight='bold')
+    ax1.set_title('Current Density & ASR vs. Cycle', fontsize=12, fontweight='bold')
 
     plt.tight_layout()
     plt.subplots_adjust(bottom=0.18)
@@ -2808,10 +2808,10 @@ def detect_current_dependent_eis(eis_results, cycles, v_tol=0.03):
 
 def compute_ir_corrected_polcurve(j_pol, V_pol, eis_at_j, geo_area=5.0):
     """
-    Compute iR-corrected polarization curve using current-dependent HFR.
+    Compute iR-corrected polarization curve using current-dependent ASR (R₀+R₁).
 
-    Interpolates HFR(j) from the EIS measurements, then computes:
-      V_iR-free(j) = V(j) - j × HFR(j)
+    Interpolates ASR(j) from the EIS measurements, then computes:
+      V_iR-free(j) = V(j) - j × ASR(j)
 
     Returns
     -------
@@ -2826,7 +2826,7 @@ def compute_ir_corrected_polcurve(j_pol, V_pol, eis_at_j, geo_area=5.0):
     asr_hfr = np.array([e['asr_mohm_cm2'] for e in eis_at_j])
 
     # Interpolate ASR to all polcurve j values
-    # Clip to the range of measured HFR (no extrapolation)
+    # Clip to the range of measured ASR (no extrapolation)
     asr_interp = np.interp(j_pol, j_hfr, asr_hfr)
 
     # iR correction: V_irfree = V - j × ASR (convert mΩ·cm² to Ω·cm²)
@@ -2840,7 +2840,7 @@ def plot_ir_correction(j_pol, V_pol, V_irfree, j_hfr, asr_hfr, asr_interp,
     """
     Three-panel plot:
       Left  — Raw and iR-corrected polcurves
-      Center — ASR (HFR) vs current density
+      Center — ASR (R₀+R₁) vs current density
       Right — iR drop vs current density
     """
     if len(j_pol) == 0 or len(j_hfr) == 0:
@@ -2864,7 +2864,7 @@ def plot_ir_correction(j_pol, V_pol, V_irfree, j_hfr, asr_hfr, asr_interp,
 
     # ── Center: ASR vs j ──
     ax2.plot(j_hfr, asr_hfr, 'o', ms=7, color='#d62728',
-             markeredgecolor='k', markeredgewidth=0.5, label='HFR (measured)')
+             markeredgecolor='k', markeredgewidth=0.5, label='ASR measured (R₀+R₁)')
     j_smooth = np.linspace(j_pol.min(), j_pol.max(), 200)
     asr_smooth = np.interp(j_smooth, j_hfr, asr_hfr)
     ax2.plot(j_smooth, asr_smooth, '--', color='#d62728', lw=1, alpha=0.6,
@@ -2874,7 +2874,7 @@ def plot_ir_correction(j_pol, V_pol, V_irfree, j_hfr, asr_hfr, asr_interp,
     ax2.set_xlim(left=0)
     ax2.legend(fontsize=9)
     ax2.grid(True, alpha=0.3)
-    ax2.set_title('HFR vs. Current Density', fontsize=10)
+    ax2.set_title('ASR (R₀+R₁) vs. Current Density', fontsize=10)
 
     # ── Right: iR drop ──
     ir_drop = j_pol * asr_interp  # mV
@@ -3777,7 +3777,7 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
     plt.close('all')
     gc.collect()
 
-    # ── EIS / HFR analysis ──
+    # ── EIS analysis ──
     # Normalize eis_files to a list
     if eis_files is None:
         eis_files_list = []
@@ -3826,18 +3826,7 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
                 for em in eis_mapped:
                     lbl = f"cycle {em['cycle']}" if em['cycle'] > 0 else "pre-conditioning"
                     print(f"    t = {em['t_eis']:.0f} s → {lbl}, "
-                          f"ASR = {em['asr_mohm_cm2']:.1f} mΩ·cm²")
-
-            # Use the last matched EIS measurement's ASR for model fit
-            if eis_results_for_tracking:
-                fix_ASR = eis_results_for_tracking[-1]['asr_mohm_cm2']
-
-                # Plot Nyquist for last matched EIS
-                last_eis = eis_results_for_tracking[-1]
-                plot_nyquist(last_eis['eis_data'],
-                             {'asr_mohm_cm2': fix_ASR,
-                              'hfr_ohm': last_eis['hfr_ohm']},
-                             geo_area=geo_area, save_path=nyquist_path)
+                          f"ASR (extract_hfr) = {em['asr_mohm_cm2']:.1f} mΩ·cm²")
 
             eis_results_for_export = eis_results_for_tracking
             plt.close('all')
@@ -3873,10 +3862,51 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
                                          save_path=eis_fit_path)
                             plt.close('all')
 
+                # Update eis_mapped and fix_ASR from circuit fits (R₀+R₁)
+                if eis_fit_results:
+                    # Update eis_mapped ASR with R₀+R₁ from circuit fits
+                    # Match by dc_v or index
+                    for em in eis_mapped:
+                        for efr in eis_fit_results:
+                            if efr.get('dc_v') is not None and em.get('dc_v_mean') is not None:
+                                if abs(efr['dc_v'] - em['dc_v_mean']) < 0.02:
+                                    em['asr_mohm_cm2'] = efr['R0_asr'] + efr['R1_asr']
+                                    break
+                        else:
+                            # Fallback: use last fit's R₀+R₁
+                            em['asr_mohm_cm2'] = (eis_fit_results[-1]['R0_asr'] +
+                                                   eis_fit_results[-1]['R1_asr'])
+
+                    # Set fix_ASR from mean R₀+R₁ of tracking fits
+                    r0r1_values = [efr['R0_asr'] + efr['R1_asr']
+                                   for efr in eis_fit_results]
+                    fix_ASR = float(np.mean(r0r1_values))
+                    print(f"\n  ASR from circuit fit (R₀+R₁): {fix_ASR:.1f} mΩ·cm²")
+
+                    # Plot Nyquist for last EIS with R₀+R₁ from fit
+                    last_eis = eis_results_for_tracking[-1]
+                    last_fit = eis_fit_results[-1]
+                    plot_nyquist(last_eis['eis_data'],
+                                 {'asr_mohm_cm2': last_fit['R0_asr'] + last_fit['R1_asr'],
+                                  'hfr_ohm': (last_fit['R0_ohm'] + last_fit['R1_ohm'])},
+                                 geo_area=geo_area, save_path=nyquist_path)
+                    plt.close('all')
+                else:
+                    # No circuit fits succeeded — fall back to extract_hfr
+                    if eis_results_for_tracking:
+                        fix_ASR = eis_results_for_tracking[-1]['asr_mohm_cm2']
+                        print(f"\n  ASR from extract_hfr (fallback): {fix_ASR:.1f} mΩ·cm²")
+                        last_eis = eis_results_for_tracking[-1]
+                        plot_nyquist(last_eis['eis_data'],
+                                     {'asr_mohm_cm2': fix_ASR,
+                                      'hfr_ohm': last_eis['hfr_ohm']},
+                                     geo_area=geo_area, save_path=nyquist_path)
+                        plt.close('all')
+
                 if not eis_fit_results:
                     print("    No EIS spectra could be fitted")
 
-    # ── Current-dependent EIS → iR correction per cycle ──
+    # ── Current-dependent EIS → circuit fit + iR correction per cycle ──
     ir_data_list = []
     if eis_files_list and eis_results:
         eis_groups = detect_current_dependent_eis(eis_results, cycles)
@@ -3884,6 +3914,35 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
             cd_cyc_idx = group['cycle_idx']
             eis_at_j = group['eis_at_j']
 
+            # Fit equivalent circuit for each EIS FIRST to get R₀+R₁
+            for ei, e in enumerate(eis_at_j):
+                eis_data = e.get('eis_data')
+                if eis_data is None:
+                    continue
+                label = f"Cycle{cd_cyc_idx+1}_j={e['j']:.3f}"
+                efr = fit_eis_circuit(eis_data, geo_area=geo_area,
+                                      hfr_seed=e['hfr_ohm'])
+                if efr is not None:
+                    efr['dc_v'] = e.get('dc_v_eis')
+                    efr['j'] = e['j']
+                    efr['label'] = label
+                    eis_fit_results.append(efr)
+                    print_eis_fit_summary(efr, geo_area=geo_area)
+
+                    # Update eis_at_j with R₀+R₁ from circuit fit
+                    e['asr_mohm_cm2'] = efr['R0_asr'] + efr['R1_asr']
+
+                    if image_ext and save_dir:
+                        safe = label.replace('=', '').replace(' ', '_')
+                        eis_fit_path = os.path.join(
+                            save_dir, f'eis_fit_{safe}.{image_ext}')
+                        plot_eis_fit(eis_data, efr, geo_area=geo_area,
+                                     title=f'EIS Fit — Cycle {cd_cyc_idx+1}, '
+                                           f'j = {e["j"]:.3f} A/cm²',
+                                     save_path=eis_fit_path)
+                        plt.close('all')
+
+            # Now compute iR correction using updated R₀+R₁ values
             ref_cyc = cycles[cd_cyc_idx]
             j_pol = np.array([d['j'] for d in ref_cyc])
             V_pol = np.array([d['V'] for d in ref_cyc])
@@ -3930,31 +3989,6 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
                     save_path=eis_save)
                 plt.close('all')
 
-            # Fit equivalent circuit for each EIS in this group
-            for ei, e in enumerate(eis_at_j):
-                eis_data = e.get('eis_data')
-                if eis_data is None:
-                    continue
-                label = f"Cycle{cd_cyc_idx+1}_j={e['j']:.3f}"
-                efr = fit_eis_circuit(eis_data, geo_area=geo_area,
-                                      hfr_seed=e['hfr_ohm'])
-                if efr is not None:
-                    efr['dc_v'] = e.get('dc_v_eis')
-                    efr['j'] = e['j']
-                    efr['label'] = label
-                    eis_fit_results.append(efr)
-                    print_eis_fit_summary(efr, geo_area=geo_area)
-
-                    if image_ext and save_dir:
-                        safe = label.replace('=', '').replace(' ', '_')
-                        eis_fit_path = os.path.join(
-                            save_dir, f'eis_fit_{safe}.{image_ext}')
-                        plot_eis_fit(eis_data, efr, geo_area=geo_area,
-                                     title=f'EIS Fit — Cycle {cd_cyc_idx+1}, '
-                                           f'j = {e["j"]:.3f} A/cm²',
-                                     save_path=eis_fit_path)
-                        plt.close('all')
-
     # Legacy single ir_data for export (use first group if available)
     ir_data = ir_data_list if ir_data_list else None
 
@@ -3970,18 +4004,17 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
                     eis_circuit_by_cycle[ci].append(efr)
                     break
 
-    # Update fix_ASR from circuit fits if available (R0+R1)
+    # Update fix_ASR from current-dependent EIS circuit fits if available
     if eis_circuit_by_cycle:
         r0r1_values = []
         for ci, fits in eis_circuit_by_cycle.items():
             for f in fits:
                 r0r1_values.append(f['R0_asr'] + f['R1_asr'])
         if r0r1_values:
-            fix_ASR_eis = float(np.mean(r0r1_values))
-            print(f"\n  ASR from circuit fit (R₀+R₁): {fix_ASR_eis:.1f} mΩ·cm² "
-                  f"(was {fix_ASR:.1f} from HFR)" if fix_ASR else
-                  f"\n  ASR from circuit fit (R₀+R₁): {fix_ASR_eis:.1f} mΩ·cm²")
-            fix_ASR = fix_ASR_eis
+            fix_ASR_cd = float(np.mean(r0r1_values))
+            print(f"\n  ASR from current-dep EIS (R₀+R₁): {fix_ASR_cd:.1f} mΩ·cm²"
+                  + (f" (was {fix_ASR:.1f} from tracking EIS)" if fix_ASR else ""))
+            fix_ASR = fix_ASR_cd
 
     # ── Transmission-line (coth) iR correction per cycle ──
     coth_results = []
@@ -4041,7 +4074,7 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
                                     save_path=coth_path)
                 plt.close('all')
 
-    # ── Plot j/V and HFR vs cycle ──
+    # ── Plot j/V and ASR vs cycle ──
     if len(cycles) >= 2:
         if is_galv:
             if eis_mapped:
@@ -4118,7 +4151,7 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
 
             if fix_ASR:
                 print(f"\n  Fitting cycle {cyc_num} ({len(last_cyc)} pts)"
-                      f" with ASR fixed from HFR = {fix_ASR:.1f} mΩ·cm²...")
+                      f" with ASR (R₀+R₁) = {fix_ASR:.1f} mΩ·cm²...")
             else:
                 print(f"\n  Fitting cycle {cyc_num} ({len(last_cyc)} pts)...")
 
