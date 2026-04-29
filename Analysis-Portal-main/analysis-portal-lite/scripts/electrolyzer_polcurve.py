@@ -1317,7 +1317,7 @@ def compute_eis_loss_decomposition(cycles, eis_circuit_by_cycle, j_target,
             continue
 
         fits = eis_circuit_by_cycle[ci]
-        if len(fits) < 2:
+        if len(fits) < 1:
             continue
 
         # Get j and R values from circuit fits
@@ -1326,31 +1326,14 @@ def compute_eis_loss_decomposition(cycles, eis_circuit_by_cycle, j_target,
         R1_eis = np.array([f['R1_ohm'] for f in fits if f.get('j') is not None])
         R2_eis = np.array([f['R2_ohm'] for f in fits if f.get('j') is not None])
 
-        if len(j_eis) < 2:
+        if len(j_eis) < 1:
             continue
 
-        # Sort by j
-        order = np.argsort(j_eis)
-        j_eis = j_eis[order]
-        R0_eis = R0_eis[order]
-        R1_eis = R1_eis[order]
-        R2_eis = R2_eis[order]
-
-        # Check j_target is within range
-        if j_target < j_eis.min() or j_target > j_eis.max():
-            # Extrapolation — use nearest
-            if j_target < j_eis.min():
-                R0_j = R0_eis[0]
-                R1_j = R1_eis[0]
-                R2_j = R2_eis[0]
-            else:
-                R0_j = R0_eis[-1]
-                R1_j = R1_eis[-1]
-                R2_j = R2_eis[-1]
-        else:
-            R0_j = float(np.interp(j_target, j_eis, R0_eis))
-            R1_j = float(np.interp(j_target, j_eis, R1_eis))
-            R2_j = float(np.interp(j_target, j_eis, R2_eis))
+        # Use lowest-j EIS fit (constant R values)
+        idx_min = np.argmin(j_eis)
+        R0_j = R0_eis[idx_min]
+        R1_j = R1_eis[idx_min]
+        R2_j = R2_eis[idx_min]
 
         # Compute voltage losses: V = j (A/cm²) × R (Ω) × A (cm²)
         V_R0 = j_target * R0_j * geo_area
@@ -2938,7 +2921,11 @@ def coth_cl_ionic_only(R1, R2):
 def compute_coth_corrections(j_pol, V_pol, eis_fits, geo_area=5.0):
     """
     Compute transmission-line iR correction for a polcurve using
-    EIS circuit fit R0, R1, R2 at each operating current.
+    EIS circuit fit R0, R1, R2 from the lowest current density.
+
+    Uses only the lowest-j EIS fit and assumes R0, R1, R2 are constant
+    across the polcurve. This avoids pre-subtracting the j-dependent
+    charge transfer resistance that Tafel should capture.
 
     Parameters
     ----------
@@ -2953,35 +2940,32 @@ def compute_coth_corrections(j_pol, V_pol, eis_fits, geo_area=5.0):
         j, V_raw, V_R0, V_R1, V_CL_ionic, V_ohmic_total, V_irfree,
         R0_interp, R1_interp, R2_interp (all in native units)
     """
-    # Extract R values from fits (in Ω, not area-normalized)
+    # Use the lowest-j EIS fit (constant R values)
     j_eis = np.array([f['j'] for f in eis_fits])
-    R0_eis = np.array([f['R0_ohm'] for f in eis_fits])
-    R1_eis = np.array([f['R1_ohm'] for f in eis_fits])
-    R2_eis = np.array([f['R2_ohm'] for f in eis_fits])
+    idx_min = np.argmin(j_eis)
 
-    order = np.argsort(j_eis)
-    j_eis = j_eis[order]
-    R0_eis = R0_eis[order]
-    R1_eis = R1_eis[order]
-    R2_eis = R2_eis[order]
+    R0 = eis_fits[idx_min]['R0_ohm']
+    R1 = eis_fits[idx_min]['R1_ohm']
+    R2 = eis_fits[idx_min]['R2_ohm']
 
-    # Interpolate R0, R1, R2 at each polcurve j
-    # Clamp to EIS range (no extrapolation)
-    j_clip = np.clip(j_pol, j_eis.min(), j_eis.max())
-    R0_j = np.interp(j_clip, j_eis, R0_eis)
-    R1_j = np.interp(j_clip, j_eis, R1_eis)
-    R2_j = np.interp(j_clip, j_eis, R2_eis)
+    j_ref = j_eis[idx_min]
+    print(f"    Using EIS at j = {j_ref:.4f} A/cm² for iR correction "
+          f"(R₀={R0*geo_area*1000:.1f}, R₁={R1*geo_area*1000:.1f}, "
+          f"R₂={R2*geo_area*1000:.1f} mΩ·cm²)")
 
-    # Compute voltage losses at each j
+    # Compute voltage losses at each j (constant R values)
     # V = j (A/cm²) × R (Ω) × A (cm²)  →  V
-    V_R0 = j_pol * R0_j * geo_area                  # membrane ohmic
-    V_R1 = j_pol * R1_j * geo_area                  # charge transfer
-    V_CL_ionic = np.array([j_pol[i] * coth_cl_ionic_only(R1_j[i], R2_j[i]) * geo_area
-                           for i in range(len(j_pol))])  # CL ionic (coth)
+    V_R0 = j_pol * R0 * geo_area                  # membrane ohmic
+    V_R1 = j_pol * R1 * geo_area                  # charge transfer
+    V_CL_ionic = j_pol * coth_cl_ionic_only(R1, R2) * geo_area  # CL ionic (coth)
     V_ohmic_total = V_R0 + V_CL_ionic             # total non-kinetic ohmic (coth)
 
     # iR-free for Tafel fitting: subtract R0 + R1 + CL ionic (coth)
     V_irfree = V_pol - V_R0 - V_R1 - V_CL_ionic
+
+    R0_arr = np.full_like(j_pol, R0 * geo_area * 1000)
+    R1_arr = np.full_like(j_pol, R1 * geo_area * 1000)
+    R2_arr = np.full_like(j_pol, R2 * geo_area * 1000)
 
     return {
         'j': j_pol,
@@ -2991,9 +2975,9 @@ def compute_coth_corrections(j_pol, V_pol, eis_fits, geo_area=5.0):
         'V_CL_ionic': V_CL_ionic,
         'V_ohmic_total': V_ohmic_total,
         'V_irfree': V_irfree,
-        'R0_interp': R0_j * geo_area * 1000,  # mΩ·cm²
-        'R1_interp': R1_j * geo_area * 1000,
-        'R2_interp': R2_j * geo_area * 1000,
+        'R0_interp': R0_arr,  # mΩ·cm² (constant)
+        'R1_interp': R1_arr,
+        'R2_interp': R2_arr,
     }
 
 
