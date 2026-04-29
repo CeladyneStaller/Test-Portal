@@ -84,15 +84,8 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
             f"Analysis failed for {Path(polcurve_file).name}: {e}\n{tb.format_exc()}"
         )
 
-    # Verify expected outputs
-    ext = image_ext or 'png'
-    EXPECTED = {'analysis_data.xlsx'}
-    if image_ext:
-        EXPECTED.update({f'polcurve.{ext}', f'j_vs_cycle.{ext}',
-                        f'model_fit.{ext}', f'nyquist.{ext}',
-                        f'losses_vs_cycle.{ext}', f'ir_correction.{ext}'})
-    output_files = [f.name for f in out.iterdir()
-                    if f.is_file() and f.name in EXPECTED]
+    # Collect all output files
+    output_files = [f.name for f in out.iterdir() if f.is_file()]
 
     if not output_files:
         raise RuntimeError(
