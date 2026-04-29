@@ -3227,6 +3227,131 @@ def plot_coth_analysis(coth_result, tafel_result, eis_fits, cycle_num=None,
     return fig
 
 
+def plot_coth_model_fit(coth_result, tafel_result, cycle_num=None,
+                         T_C=80.0, p_cathode_barg=0.0, p_anode_barg=0.0,
+                         geo_area=5.0, save_path=None):
+    """
+    Three-panel plot matching the standard model fit layout:
+      Left:   Stacked-area loss breakdown
+      Center: Data vs reconstructed model
+      Right:  Residuals with ±RMSE band
+    """
+    cr = coth_result
+    j = cr['j']
+    E = E_rev(T_C, p_cathode_barg, p_anode_barg)
+
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5.5), dpi=120)
+
+    # Build title
+    ttl = 'Coth iR-Corrected Model Fit'
+    if cycle_num is not None:
+        ttl += f' — Cycle {cycle_num}'
+    subtitles = []
+    if tafel_result is not None:
+        subtitles.append(f'RMSE = {tafel_result["rmse_mV"]:.1f} mV')
+    r0r1 = cr['R0_interp'][0] + cr['R1_interp'][0]
+    subtitles.append(f'R₀+R₁ = {r0r1:.1f} mΩ·cm²')
+    subtitles.append(f'T = {T_C:.0f} °C')
+    fig.suptitle(f"{ttl}\n{',  '.join(subtitles)}",
+                 fontsize=11, fontweight='bold')
+
+    # ── Compute model components for smooth curves ──
+    j_smooth = np.linspace(max(j.min(), 1e-4), j.max(), 200)
+
+    # Constant R0, R1; interpolated R2
+    R0_val = cr['R0_interp'][0] / (geo_area * 1000)  # back to Ω
+    R1_val = cr['R1_interp'][0] / (geo_area * 1000)
+    R2_arr = cr['R2_interp'] / (geo_area * 1000)  # Ω at each j
+    # Interpolate R2 for smooth j
+    R2_smooth = np.interp(j_smooth, j, R2_arr)
+
+    E_arr = np.full_like(j_smooth, E)
+    V_R0_s = j_smooth * R0_val * geo_area
+    V_R1_s = j_smooth * R1_val * geo_area
+    V_CL_s = np.array([j_smooth[i] * coth_cl_ionic_only(R1_val, R2_smooth[i]) * geo_area
+                        for i in range(len(j_smooth))])
+
+    if tafel_result is not None:
+        tfr = tafel_result
+        j0a, j0c = tfr['j0_a'], tfr['j0_c']
+        ba = tfr['ba_mVdec'] / 1000  # V/dec
+        bc = tfr['bc_mVdec'] / 1000
+        c_mt = tfr['c_mt']
+        eta_a_s = np.where(j_smooth > j0a, ba * np.log10(j_smooth / j0a), 0.0)
+        eta_c_s = np.where(j_smooth > j0c, bc * np.log10(j_smooth / j0c), 0.0)
+        V_mt_s = c_mt * j_smooth**2
+        V_model_s = E + eta_a_s + eta_c_s + V_R0_s + V_R1_s + V_CL_s + V_mt_s
+    else:
+        eta_a_s = np.zeros_like(j_smooth)
+        eta_c_s = np.zeros_like(j_smooth)
+        V_mt_s = np.zeros_like(j_smooth)
+        V_model_s = None
+
+    # ── Left: Stacked area loss breakdown ──
+    labels = ['E_rev', 'η anode (OER)', 'η cathode (HER)',
+              'R₀ (membrane)', 'R₁ (charge transfer)',
+              'CL ionic (coth)', 'Mass transport']
+    colors = ['#2196F3', '#FF5722', '#FF9800', '#4CAF50',
+              '#8BC34A', '#FFC107', '#9C27B0']
+    arrays = [E_arr, eta_a_s, eta_c_s, V_R0_s, V_R1_s, V_CL_s, V_mt_s]
+    ax1.stackplot(j_smooth, *arrays, labels=labels, colors=colors, alpha=0.7)
+    ax1.plot(j, cr['V_raw'], 'ko', ms=5, label='Data', zorder=5)
+    ax1.set_xlabel('j  [A/cm²]')
+    ax1.set_ylabel('V  [V]')
+    ax1.set_xlim(0, j.max())
+    ax1.legend(loc='upper left', fontsize=6.5)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_title('Loss breakdown', fontsize=10)
+
+    # ── Center: Data vs model ──
+    ax2.plot(j, cr['V_raw'], 'ko', ms=5, label='Data', zorder=5)
+    if V_model_s is not None:
+        ax2.plot(j_smooth, V_model_s, 'r-', lw=2, label='Fitted model')
+    ax2.set_xlabel('j  [A/cm²]')
+    ax2.set_ylabel('V  [V]')
+    ax2.set_xlim(0, j.max())
+    ax2.legend(loc='upper left', fontsize=9)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_title('Data vs. model', fontsize=10)
+
+    # ── Right: Residuals ──
+    if tafel_result is not None:
+        # Compute model at data j points
+        R2_data = R2_arr
+        V_R0_d = j * R0_val * geo_area
+        V_R1_d = j * R1_val * geo_area
+        V_CL_d = np.array([j[i] * coth_cl_ionic_only(R1_val, R2_data[i]) * geo_area
+                            for i in range(len(j))])
+        eta_a_d = np.where(j > j0a, ba * np.log10(j / j0a), 0.0)
+        eta_c_d = np.where(j > j0c, bc * np.log10(j / j0c), 0.0)
+        V_mt_d = c_mt * j**2
+        V_model_d = E + eta_a_d + eta_c_d + V_R0_d + V_R1_d + V_CL_d + V_mt_d
+        residuals = (cr['V_raw'] - V_model_d) * 1000  # mV
+        rmse = tafel_result['rmse_mV']
+
+        ax3.stem(j, residuals, linefmt='C0-', markerfmt='C0o', basefmt='k-')
+        ax3.axhline(0, color='k', lw=0.5)
+        ax3.axhspan(-rmse, rmse, alpha=0.15, color='green',
+                     label=f'±RMSE ({rmse:.1f} mV)')
+        ax3.set_xlabel('j  [A/cm²]')
+        ax3.set_ylabel('Residual  [mV]')
+        ax3.legend(fontsize=9)
+        ax3.grid(True, alpha=0.3)
+        ax3.set_title('Residuals', fontsize=10)
+    else:
+        ax3.text(0.5, 0.5, 'Tafel fit unavailable', ha='center', va='center',
+                 fontsize=12, color='gray', transform=ax3.transAxes)
+        ax3.set_title('Residuals', fontsize=10)
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, bbox_inches='tight')
+        print(f"  Plot saved: {save_path}")
+    else:
+        plt.show()
+    return fig
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  Electrolyzer model & fitting
 # ═══════════════════════════════════════════════════════════════════
@@ -4072,6 +4197,18 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
                                     p_cathode_barg=p_cathode_barg,
                                     p_anode_barg=p_anode_barg,
                                     save_path=coth_path)
+                plt.close('all')
+
+                # 3-panel model fit plot
+                if len(eis_circuit_by_cycle) == 1:
+                    fit_path = os.path.join(save_dir, f'coth_model_fit.{image_ext}')
+                else:
+                    fit_path = os.path.join(save_dir,
+                                             f'coth_model_fit_cycle{ci+1}.{image_ext}')
+                plot_coth_model_fit(cr, tfr, cycle_num=ci+1,
+                                    T_C=T_C, p_cathode_barg=p_cathode_barg,
+                                    p_anode_barg=p_anode_barg,
+                                    geo_area=geo_area, save_path=fit_path)
                 plt.close('all')
 
     # ── Plot j/V and ASR vs cycle ──
