@@ -4198,14 +4198,14 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
 
                 # 3-panel model fit plot
                 if len(eis_circuit_by_cycle) == 1:
-                    fit_path = os.path.join(save_dir, f'coth_model_fit.{image_ext}')
+                    coth_fit_path = os.path.join(save_dir, f'coth_model_fit.{image_ext}')
                 else:
-                    fit_path = os.path.join(save_dir,
+                    coth_fit_path = os.path.join(save_dir,
                                              f'coth_model_fit_cycle{ci+1}.{image_ext}')
                 plot_coth_model_fit(cr, tfr, cycle_num=ci+1,
                                     T_C=T_C, p_cathode_barg=p_cathode_barg,
                                     p_anode_barg=p_anode_barg,
-                                    geo_area=geo_area, save_path=fit_path)
+                                    geo_area=geo_area, save_path=coth_fit_path)
                 plt.close('all')
 
     # ── Plot j/V and ASR vs cycle ──
