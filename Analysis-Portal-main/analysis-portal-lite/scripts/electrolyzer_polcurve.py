@@ -3424,8 +3424,12 @@ def fit_polcurve(j_data, V_data, T_C=80.0, p_cathode_barg=0.0,
     if fix_ASR is not None:
         x0[0], lo[0], hi[0] = fix_ASR, fix_ASR - 0.01, fix_ASR + 0.01
 
-    res = least_squares(residuals, x0, bounds=(lo, hi), method='trf',
-                        loss='soft_l1', f_scale=0.01)
+    try:
+        res = least_squares(residuals, x0, bounds=(lo, hi), method='trf',
+                            loss='soft_l1', f_scale=0.01)
+    except Exception as e:
+        print(f"  fit_polcurve least_squares error: {e}")
+        return None
 
     xf = res.x
     V_model = model(j_fit, xf)
@@ -4285,10 +4289,23 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
             else:
                 print(f"\n  Fitting cycle {cyc_num} ({len(last_cyc)} pts)...")
 
-            fr = fit_polcurve(j_last, V_last, T_C=T_C,
-                              p_cathode_barg=p_cathode_barg,
-                              p_anode_barg=p_anode_barg,
-                              fix_ASR=fix_ASR)
+            try:
+                fr = fit_polcurve(j_last, V_last, T_C=T_C,
+                                  p_cathode_barg=p_cathode_barg,
+                                  p_anode_barg=p_anode_barg,
+                                  fix_ASR=fix_ASR)
+            except Exception as e:
+                print(f"  Model fit with fix_ASR={fix_ASR:.1f} failed: {e}")
+                # Retry without ASR constraint
+                print(f"  Retrying without ASR constraint...")
+                try:
+                    fr = fit_polcurve(j_last, V_last, T_C=T_C,
+                                      p_cathode_barg=p_cathode_barg,
+                                      p_anode_barg=p_anode_barg,
+                                      fix_ASR=None)
+                except Exception as e2:
+                    print(f"  Model fit failed entirely: {e2}")
+                    fr = None
             if fr is not None:
                 print_fit_summary(fr)
                 if fit_path:
