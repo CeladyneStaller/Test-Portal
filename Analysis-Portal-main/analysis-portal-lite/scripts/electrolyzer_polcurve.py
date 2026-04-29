@@ -84,8 +84,12 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
             f"Analysis failed for {Path(polcurve_file).name}: {e}\n{tb.format_exc()}"
         )
 
-    # Collect all output files
-    output_files = [f.name for f in out.iterdir() if f.is_file()]
+    # Collect all output files (including subfolders)
+    output_files = []
+    for f in out.rglob('*'):
+        if f.is_file():
+            rel = f.relative_to(out)
+            output_files.append(str(rel))
 
     if not output_files:
         raise RuntimeError(
@@ -1790,7 +1794,7 @@ def export_excel(filepath, cycles, v_targets=[1.8, 1.7], j_targets=None,
             dep_label = 'V [V]' if j_targets else 'j [A/cm²]'
             ws9.append(['Cycle', dep_label,
                         'R₀ membrane [mV]', 'R₁ charge transfer [mV]',
-                        'CL ionic coth [mV]', 'Kinetic residual [mV]',
+                        'CL ionic (CLR) [mV]', 'Kinetic residual [mV]',
                         'Total non-E_rev [mV]'])
             for i in range(len(cn_eis)):
                 total = (eis_losses['V_R0_mV'][i] + eis_losses['V_R1_mV'][i] +
@@ -1805,20 +1809,20 @@ def export_excel(filepath, cycles, v_targets=[1.8, 1.7], j_targets=None,
                     round(total, 2),
                 ])
 
-    # ── Sheet 10: Coth iR Correction ──
+    # ── Sheet 10: CLR iR Correction ──
     if coth_results:
         for gi, cr_entry in enumerate(coth_results):
             cr = cr_entry['coth_result']
             tfr = cr_entry['tafel_result']
             ci = cr_entry['cycle_idx']
 
-            sheet_name = f'Coth Cycle {ci+1}'
+            sheet_name = f'CLR Cycle {ci+1}'
             if len(sheet_name) > 31:
                 sheet_name = sheet_name[:31]
             ws10 = wb.create_sheet(sheet_name)
 
             # Tafel summary
-            ws10.append(['Transmission-Line iR Correction'])
+            ws10.append(['CLR (Catalyst Layer Resistance) iR Correction'])
             ws10.append([])
             if tfr is not None:
                 ws10.append(['Tafel Fit Results'])
@@ -1835,7 +1839,7 @@ def export_excel(filepath, cycles, v_targets=[1.8, 1.7], j_targets=None,
             # Polcurve data with corrections
             V_mt = tfr['V_mt'] if tfr is not None else np.zeros(len(cr['j']))
             ws10.append(['j (A/cm²)', 'V_raw (V)', 'V_R0 (mV)', 'V_R1 (mV)',
-                         'V_CL_coth (mV)', 'V_mt (mV)', 'V_irfree (V)',
+                         'V_CL_CLR (mV)', 'V_mt (mV)', 'V_irfree (V)',
                          'R₀ (mΩ·cm²)', 'R₁ (mΩ·cm²)', 'R₂ (mΩ·cm²)'])
             for i in range(len(cr['j'])):
                 ws10.append([
@@ -3102,7 +3106,7 @@ def plot_coth_analysis(coth_result, tafel_result, eis_fits, cycle_num=None,
     fig, axes = plt.subplots(2, 2, figsize=(14, 10), dpi=120)
     ax1, ax2, ax3, ax4 = axes.flat
 
-    ttl = 'Transmission-Line iR Correction'
+    ttl = 'CLR (Catalyst Layer Resistance) iR Correction'
     if cycle_num is not None:
         ttl += f' — Cycle {cycle_num}'
     fig.suptitle(ttl, fontsize=13, fontweight='bold')
@@ -3236,7 +3240,7 @@ def plot_coth_model_fit(coth_result, tafel_result, cycle_num=None,
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5.5), dpi=120)
 
     # Build title
-    ttl = 'Coth iR-Corrected Model Fit'
+    ttl = 'CLR iR-Corrected Model Fit'
     if cycle_num is not None:
         ttl += f' — Cycle {cycle_num}'
     subtitles = []
@@ -3966,13 +3970,15 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
                         print_eis_fit_summary(efr, geo_area=geo_area)
 
                         if image_ext and save_dir:
+                            eis_fits_dir = os.path.join(save_dir, 'eis_fits')
+                            os.makedirs(eis_fits_dir, exist_ok=True)
                             if len(eis_results_for_tracking) == 1:
                                 eis_fit_path = os.path.join(
-                                    save_dir, f'eis_fit.{image_ext}')
+                                    eis_fits_dir, f'eis_fit.{image_ext}')
                             else:
                                 safe = label.replace('=', '').replace(' ', '_')
                                 eis_fit_path = os.path.join(
-                                    save_dir, f'eis_fit_{safe}.{image_ext}')
+                                    eis_fits_dir, f'eis_fit_{safe}.{image_ext}')
                             plot_eis_fit(eis_data, efr, geo_area=geo_area,
                                          title=f'EIS Fit — {label}',
                                          save_path=eis_fit_path)
@@ -4055,9 +4061,11 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
                     e['asr_mohm_cm2'] = efr['R0_asr'] + efr['R1_asr']
 
                     if image_ext and save_dir:
+                        eis_fits_dir = os.path.join(save_dir, 'eis_fits')
+                        os.makedirs(eis_fits_dir, exist_ok=True)
                         safe = label.replace('=', '').replace(' ', '_')
                         eis_fit_path = os.path.join(
-                            save_dir, f'eis_fit_{safe}.{image_ext}')
+                            eis_fits_dir, f'eis_fit_{safe}.{image_ext}')
                         plot_eis_fit(eis_data, efr, geo_area=geo_area,
                                      title=f'EIS Fit — Cycle {cd_cyc_idx+1}, '
                                            f'j = {e["j"]:.3f} A/cm²',
@@ -4185,10 +4193,10 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
 
             if image_ext and save_dir:
                 if len(eis_circuit_by_cycle) == 1:
-                    coth_path = os.path.join(save_dir, f'coth_analysis.{image_ext}')
+                    coth_path = os.path.join(save_dir, f'CLR_analysis.{image_ext}')
                 else:
                     coth_path = os.path.join(save_dir,
-                                              f'coth_analysis_cycle{ci+1}.{image_ext}')
+                                              f'CLR_analysis_cycle{ci+1}.{image_ext}')
                 plot_coth_analysis(cr, tfr, fits, cycle_num=ci+1,
                                     geo_area=geo_area, T_C=T_C,
                                     p_cathode_barg=p_cathode_barg,
@@ -4198,10 +4206,10 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
 
                 # 3-panel model fit plot
                 if len(eis_circuit_by_cycle) == 1:
-                    coth_fit_path = os.path.join(save_dir, f'coth_model_fit.{image_ext}')
+                    coth_fit_path = os.path.join(save_dir, f'CLR_model_fit.{image_ext}')
                 else:
                     coth_fit_path = os.path.join(save_dir,
-                                             f'coth_model_fit_cycle{ci+1}.{image_ext}')
+                                             f'CLR_model_fit_cycle{ci+1}.{image_ext}')
                 plot_coth_model_fit(cr, tfr, cycle_num=ci+1,
                                     T_C=T_C, p_cathode_barg=p_cathode_barg,
                                     p_anode_barg=p_anode_barg,
