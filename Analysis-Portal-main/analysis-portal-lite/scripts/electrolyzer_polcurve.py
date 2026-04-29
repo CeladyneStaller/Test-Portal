@@ -3845,6 +3845,7 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
                                           hfr_seed=hfr_seed)
                     if efr is not None:
                         efr['dc_v'] = dc_v
+                        efr['t_eis'] = er.get('t_eis')
                         efr['label'] = label
                         eis_fit_results.append(efr)
                         print_eis_fit_summary(efr, geo_area=geo_area)
@@ -3865,15 +3866,21 @@ def analyze(filepath, geo_area=5.0, save_dir=None, title=None,
                 # Update eis_mapped and fix_ASR from circuit fits (R₀+R₁)
                 if eis_fit_results:
                     # Update eis_mapped ASR with R₀+R₁ from circuit fits
-                    # Match by dc_v or index
+                    # Match each mapped EIS to nearest circuit fit by elapsed time
                     for em in eis_mapped:
+                        t_em = em.get('t_eis')
+                        best_efr = None
+                        best_dt = float('inf')
                         for efr in eis_fit_results:
-                            if efr.get('dc_v') is not None and em.get('dc_v_mean') is not None:
-                                if abs(efr['dc_v'] - em['dc_v_mean']) < 0.02:
-                                    em['asr_mohm_cm2'] = efr['R0_asr'] + efr['R1_asr']
-                                    break
+                            t_efr = efr.get('t_eis')
+                            if t_em is not None and t_efr is not None:
+                                dt = abs(t_em - t_efr)
+                                if dt < best_dt:
+                                    best_dt = dt
+                                    best_efr = efr
+                        if best_efr is not None:
+                            em['asr_mohm_cm2'] = best_efr['R0_asr'] + best_efr['R1_asr']
                         else:
-                            # Fallback: use last fit's R₀+R₁
                             em['asr_mohm_cm2'] = (eis_fit_results[-1]['R0_asr'] +
                                                    eis_fit_results[-1]['R1_asr'])
 
