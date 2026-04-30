@@ -1555,7 +1555,7 @@ def plot_polcurve(results, save_path=None):
     fig.tight_layout()
 
     if save_path:
-        save_with_sidecar(fig, save_path, dpi=200, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='polcurve', dpi=200, bbox_inches='tight')
         print(f'  Saved: {save_path}')
 
         # Write sidecar JSON for comparison feature
@@ -1625,7 +1625,7 @@ def plot_polcurve_overlay(all_results, save_path=None):
     fig.tight_layout()
 
     if save_path:
-        save_with_sidecar(fig, save_path, dpi=200, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='polcurve_overlay', dpi=200, bbox_inches='tight')
         print(f'  Saved: {save_path}')
     return fig
 
