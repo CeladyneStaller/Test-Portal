@@ -21,6 +21,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from scripts.helpers.plot_compare import save_with_sidecar
 from scipy.optimize import least_squares
 from scipy.integrate import trapezoid
 import argparse
@@ -552,7 +553,7 @@ def plot_eis(results, save_path=None):
     fig.tight_layout()
 
     if save_path:
-        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, dpi=200, bbox_inches='tight')
         print(f'  Saved: {save_path}')
     return fig
 
@@ -588,7 +589,7 @@ def plot_nyquist_overlay(datasets, labels=None, save_path=None):
     fig.tight_layout()
 
     if save_path:
-        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, dpi=200, bbox_inches='tight')
         print(f'  Saved: {save_path}')
     return fig
 
