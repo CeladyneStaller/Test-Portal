@@ -308,6 +308,99 @@ async def upload_and_run(
     return {"job_id": job_id, "status": "running", "files_received": filenames}
 
 
+@app.post("/api/compare")
+async def compare_jobs(
+    comparison_type: str = Form(...),
+    sources: str = Form(...),
+    title: str = Form(""),
+    image_format: str = Form("png"),
+    show_raw: str = Form("true"),
+    show_irfree: str = Form("true"),
+):
+    """
+    Run a comparison across multiple existing jobs.
+
+    sources: JSON string of [{"job_id": str, "label": str}, ...]
+    comparison_type: "polcurve_overlay" (more types in future)
+    """
+    import json as _json
+
+    try:
+        sources_list = _json.loads(sources)
+    except _json.JSONDecodeError:
+        raise HTTPException(400, "Invalid sources JSON")
+
+    if not sources_list or len(sources_list) < 2:
+        raise HTTPException(400, "Need at least 2 sources to compare")
+
+    # Map comparison_type to script name
+    type_to_script = {
+        "polcurve_overlay": "Compare Polcurves",
+    }
+    if comparison_type not in type_to_script:
+        raise HTTPException(400, f"Unknown comparison type: {comparison_type}")
+    script = type_to_script[comparison_type]
+
+    # Validate sources and resolve their output directories
+    with jobs_lock:
+        validated_sources = []
+        for src in sources_list:
+            jid = src.get('job_id')
+            label = src.get('label', jid)
+            if jid not in jobs:
+                raise HTTPException(404, f"Job not found: {jid}")
+            job = jobs[jid]
+            if job.get('status') != 'complete':
+                raise HTTPException(400,
+                    f"Job {jid} not completed (status: {job.get('status')})")
+            output_dir = JOBS_DIR / jid / "output"
+            if not output_dir.exists():
+                raise HTTPException(404, f"Output directory not found for job {jid}")
+            validated_sources.append({
+                'job_id': jid,
+                'label': label or jid,
+                'output_dir': str(output_dir),
+            })
+
+    # Create new job for the comparison
+    job_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-cmp-" + uuid.uuid4().hex[:6]
+    input_dir = JOBS_DIR / job_id / "input"
+    output_dir = JOBS_DIR / job_id / "output"
+    input_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True)
+
+    # Pack params for the comparison script
+    user_params = {
+        'sources': _json.dumps(validated_sources),
+        'show_raw': show_raw,
+        'show_irfree': show_irfree,
+        'image_format': image_format,
+        'title': title or f"Comparison ({len(validated_sources)} samples)",
+        'sample_name': 'Comparison',  # used as filename prefix
+    }
+
+    with jobs_lock:
+        jobs[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "message": f"Running {script}...",
+            "script": script,
+            "input_files": [s['label'] for s in validated_sources],
+            "submitted_at": datetime.now().isoformat(),
+            "is_comparison": True,
+            "source_jobs": [s['job_id'] for s in validated_sources],
+        }
+
+    future = executor.submit(
+        _run_job, job_id, script, str(input_dir), str(output_dir), user_params
+    )
+    future.add_done_callback(lambda f: _on_job_done(job_id, f))
+
+    return {"job_id": job_id, "status": "running",
+            "comparison_type": comparison_type,
+            "n_sources": len(validated_sources)}
+
+
 @app.get("/api/jobs")
 async def all_jobs():
     with jobs_lock:
