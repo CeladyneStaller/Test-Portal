@@ -318,6 +318,7 @@ async def compare_jobs(
     image_format: str = Form("png"),
     show_raw: str = Form("true"),
     show_irfree: str = Form("true"),
+    grouping_mode: str = Form("plot_type"),
 ):
     """
     Run a comparison across selected PNGs from multiple jobs.
@@ -401,6 +402,7 @@ async def compare_jobs(
         'image_format': image_format,
         'title': title or f"Comparison ({len(validated_sources)} plots)",
         'sample_name': 'Comparison',
+        'grouping_mode': grouping_mode,
     }
 
     with jobs_lock:
