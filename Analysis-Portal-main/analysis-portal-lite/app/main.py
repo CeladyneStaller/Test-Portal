@@ -114,8 +114,11 @@ def _run_job(job_id: str, script_name: str, input_dir: str, output_dir: str,
     flat_list = []
     for f in sorted(all_output):
         rel = f.relative_to(out)
-        flat_list.append(str(rel))
         parts = rel.parts
+        # Hide internal sidecar JSON files from the user-facing listing
+        if '_plot_data' in parts:
+            continue
+        flat_list.append(str(rel))
         if len(parts) > 1:
             dir_key = parts[0]
             label = DIR_LABELS.get(dir_key, dir_key.replace('_', ' ').title())
@@ -354,9 +357,25 @@ async def compare_jobs(
             if not output_dir.exists():
                 raise HTTPException(404, f"Output directory not found for job {jid}")
             # Sanity check: sidecar exists for this filename
-            base = Path(filename).stem
-            sidecar = output_dir / '_plot_data' / f'{base}.json'
-            if not sidecar.exists():
+            fn_path = Path(filename)
+            base = fn_path.stem
+            parent = fn_path.parent
+            sidecar = None
+            if str(parent) != '.':
+                candidate = output_dir / parent / '_plot_data' / f'{base}.json'
+                if candidate.exists():
+                    sidecar = candidate
+            if sidecar is None:
+                candidate = output_dir / '_plot_data' / f'{base}.json'
+                if candidate.exists():
+                    sidecar = candidate
+            if sidecar is None:
+                # Last resort: recursive search
+                for cand in output_dir.rglob(f'{base}.json'):
+                    if '_plot_data' in cand.parts:
+                        sidecar = cand
+                        break
+            if sidecar is None:
                 raise HTTPException(400,
                     f"No sidecar JSON for {filename} in job {jid}. "
                     f"This plot does not yet support comparison or the analysis "
