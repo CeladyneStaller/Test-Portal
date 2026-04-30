@@ -482,6 +482,162 @@
     box-shadow: 0 8px 40px rgba(0,0,0,0.5);
   }
 
+  /* ── Compare feature ─────────────────────────── */
+  .compare-cb {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 12px;
+    font-size: 12px;
+    color: #555;
+    cursor: pointer;
+    user-select: none;
+  }
+  .compare-cb input[type=checkbox] {
+    cursor: pointer;
+    accent-color: #1F4E79;
+  }
+  .compare-cb:hover { color: #1F4E79; }
+  .compare-cb span { font-weight: 500; }
+
+  .compare-fab {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: #1F4E79;
+    color: white;
+    padding: 14px 20px;
+    border-radius: 28px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 14px;
+    border: none;
+    transition: all 0.15s;
+    z-index: 100;
+    display: none;
+  }
+  .compare-fab:hover {
+    background: #2E75B6;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+  }
+  .compare-fab.visible { display: block; }
+  .compare-fab .count {
+    background: white;
+    color: #1F4E79;
+    border-radius: 12px;
+    padding: 2px 8px;
+    margin-left: 6px;
+    font-size: 12px;
+  }
+
+  .compare-modal {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .compare-modal.open { display: flex; }
+  .compare-modal-inner {
+    background: white;
+    border-radius: 8px;
+    padding: 24px;
+    max-width: 600px;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+  }
+  .compare-modal h2 {
+    margin: 0 0 16px 0;
+    color: #1F4E79;
+    font-size: 18px;
+  }
+  .compare-modal .sample-row {
+    display: grid;
+    grid-template-columns: 1fr 2fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid #eee;
+  }
+  .compare-modal .sample-row:last-child { border-bottom: none; }
+  .compare-modal .sample-row .job-name {
+    font-size: 12px;
+    color: #888;
+    font-family: monospace;
+  }
+  .compare-modal .sample-row input[type=text] {
+    padding: 6px 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  .compare-modal .sample-row .remove-btn {
+    background: #f5f5f5;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 4px 8px;
+    cursor: pointer;
+    color: #c33;
+    font-size: 12px;
+  }
+  .compare-modal .opts {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid #eee;
+  }
+  .compare-modal .opts label {
+    display: block;
+    margin: 8px 0;
+    font-size: 13px;
+  }
+  .compare-modal .opts input[type=text] {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  .compare-modal .actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 20px;
+  }
+  .compare-modal .btn {
+    padding: 8px 16px;
+    border-radius: 4px;
+    border: none;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .compare-modal .btn-primary {
+    background: #1F4E79;
+    color: white;
+  }
+  .compare-modal .btn-primary:hover { background: #2E75B6; }
+  .compare-modal .btn-primary:disabled { background: #aaa; cursor: not-allowed; }
+  .compare-modal .btn-secondary {
+    background: #f5f5f5;
+    color: #333;
+    border: 1px solid #ddd;
+  }
+  .compare-modal .err {
+    color: #c33;
+    font-size: 13px;
+    padding: 8px 12px;
+    background: #fee;
+    border-radius: 4px;
+    margin-top: 8px;
+  }
+
   .err-box {
     margin-top: 8px;
     padding: 10px 12px;
@@ -976,6 +1132,40 @@
     </div>
   </div>
 
+  <!-- ─── Compare Selected (FAB + Modal) ──────── -->
+  <button class="compare-fab" id="compareFab" onclick="openCompareModal()">
+    Compare Selected <span class="count" id="compareCount">0</span>
+  </button>
+
+  <div class="compare-modal" id="compareModal" onclick="closeCompareModalBg(event)">
+    <div class="compare-modal-inner">
+      <h2>Polcurve Comparison</h2>
+      <p style="margin: 0 0 12px 0; font-size: 13px; color: #555;">
+        Edit labels, then generate the comparison plot and Excel file.
+      </p>
+      <div id="compareSamples"></div>
+      <div class="opts">
+        <label>
+          Plot Title:
+          <input type="text" id="compareTitle" placeholder="Polcurve Comparison">
+        </label>
+        <label>
+          <input type="checkbox" id="compareShowRaw" checked> Show raw V vs j (solid lines)
+        </label>
+        <label>
+          <input type="checkbox" id="compareShowIrFree" checked> Show iR-free V vs j (dashed lines, if available)
+        </label>
+      </div>
+      <div id="compareErr" style="display:none"></div>
+      <div class="actions">
+        <button class="btn btn-secondary" onclick="closeCompareModal()">Cancel</button>
+        <button class="btn btn-primary" id="compareGoBtn" onclick="submitComparison()">
+          Generate Comparison
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- ─── Image Lightbox ──────────────────────── -->
   <div class="lightbox" id="lightbox" onclick="closeLightbox(event)">
     <div class="lb-controls">
@@ -995,6 +1185,7 @@
 let files = [];
 let polling = {};
 let scriptDefs = {};  // name → {description, params}
+const compareSelections = new Map(); // jobId → {label, script}
 
 // ── Load scripts ────────────────────────────────
 (async () => {
@@ -1734,17 +1925,184 @@ function renderJob(id, d) {
   const sampleLabel = d.sample_name ? `<span class="job-sample">${esc(d.sample_name)}</span>` : '';
   const scriptLabel = d.script ? `<span class="job-script">${esc(d.script)}</span>` : '';
 
+  // Determine if this job is comparable (same-script comparisons only)
+  const COMPARABLE_SCRIPTS = ['Electrolyzer Pol Curve', 'FC Polarization Curve',
+                               'Fuel Cell Full Analysis'];
+  const isComparable = d.status === 'complete' && d.script &&
+                        COMPARABLE_SCRIPTS.includes(d.script) &&
+                        !d.is_comparison;
+  const compareCheckbox = isComparable
+    ? `<label class="compare-cb" title="Select for comparison">
+         <input type="checkbox" data-jobid="${esc(id)}" data-script="${esc(d.script)}"
+                data-label="${esc(d.sample_name || id)}"
+                onchange="onCompareToggle(this)">
+         <span>Compare</span>
+       </label>`
+    : '';
+
   el.innerHTML = `
     <div class="job-row">
       <span class="job-id">${sampleLabel}${scriptLabel}${esc(id)}</span>
       <span class="tag ${tagCls}">${d.status}</span>
+      ${compareCheckbox}
     </div>
     ${active ? '<div class="bar-track"><div class="bar-fill"></div></div>' : ''}
     <div class="job-msg">${esc(d.message || '')}</div>
     ${dlAllHtml}${dlHtml}${errHtml}
   `;
 
+  // Restore checkbox state after re-render
+  if (isComparable && compareSelections.has(id)) {
+    const cb = el.querySelector('input[type=checkbox][data-jobid]');
+    if (cb) cb.checked = true;
+  }
+
   document.getElementById('jc').textContent = c.querySelectorAll('.job').length;
+}
+
+// ── Compare feature ────────────────────────────
+function onCompareToggle(checkbox) {
+  const jobId = checkbox.dataset.jobid;
+  const label = checkbox.dataset.label || jobId;
+  const script = checkbox.dataset.script;
+  if (checkbox.checked) {
+    // Enforce same-script comparisons
+    const existingScripts = new Set();
+    compareSelections.forEach(s => existingScripts.add(s.script));
+    if (existingScripts.size > 0 && !existingScripts.has(script)) {
+      alert(`Cannot mix script types in a comparison.\n\nAlready selected: ${[...existingScripts].join(', ')}\nThis job: ${script}`);
+      checkbox.checked = false;
+      return;
+    }
+    compareSelections.set(jobId, { label, script });
+  } else {
+    compareSelections.delete(jobId);
+  }
+  updateCompareFab();
+}
+
+function updateCompareFab() {
+  const fab = document.getElementById('compareFab');
+  const count = document.getElementById('compareCount');
+  count.textContent = compareSelections.size;
+  if (compareSelections.size >= 2) {
+    fab.classList.add('visible');
+  } else {
+    fab.classList.remove('visible');
+  }
+}
+
+function openCompareModal() {
+  if (compareSelections.size < 2) {
+    alert('Select at least 2 jobs to compare.');
+    return;
+  }
+  const wrap = document.getElementById('compareSamples');
+  wrap.innerHTML = '';
+  compareSelections.forEach((s, jobId) => {
+    const row = document.createElement('div');
+    row.className = 'sample-row';
+    row.dataset.jobid = jobId;
+    row.innerHTML = `
+      <span class="job-name">${esc(jobId)}</span>
+      <input type="text" value="${esc(s.label)}" placeholder="Sample label">
+      <button class="remove-btn" onclick="removeCompareSample('${esc(jobId)}')">Remove</button>
+    `;
+    wrap.appendChild(row);
+  });
+  document.getElementById('compareErr').style.display = 'none';
+  document.getElementById('compareModal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeCompareModal() {
+  document.getElementById('compareModal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+function closeCompareModalBg(e) {
+  if (e.target.id === 'compareModal') closeCompareModal();
+}
+
+function removeCompareSample(jobId) {
+  compareSelections.delete(jobId);
+  // Uncheck the matching checkbox in the job list
+  const cb = document.querySelector(`input[type=checkbox][data-jobid="${jobId}"]`);
+  if (cb) cb.checked = false;
+  updateCompareFab();
+  // Re-open modal to refresh list, or close if too few left
+  if (compareSelections.size < 2) {
+    closeCompareModal();
+  } else {
+    openCompareModal();
+  }
+}
+
+async function submitComparison() {
+  const errEl = document.getElementById('compareErr');
+  errEl.style.display = 'none';
+
+  // Collect updated labels from modal inputs
+  const sources = [];
+  document.querySelectorAll('#compareSamples .sample-row').forEach(row => {
+    const jobId = row.dataset.jobid;
+    const label = row.querySelector('input[type=text]').value.trim() || jobId;
+    sources.push({ job_id: jobId, label });
+  });
+
+  if (sources.length < 2) {
+    errEl.textContent = 'Need at least 2 sources.';
+    errEl.className = 'err';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const title = document.getElementById('compareTitle').value.trim();
+  const showRaw = document.getElementById('compareShowRaw').checked;
+  const showIrFree = document.getElementById('compareShowIrFree').checked;
+
+  const btn = document.getElementById('compareGoBtn');
+  btn.disabled = true;
+  btn.textContent = 'Submitting...';
+
+  const fd = new FormData();
+  fd.append('comparison_type', 'polcurve_overlay');
+  fd.append('sources', JSON.stringify(sources));
+  fd.append('title', title);
+  fd.append('image_format', 'png');
+  fd.append('show_raw', showRaw ? 'true' : 'false');
+  fd.append('show_irfree', showIrFree ? 'true' : 'false');
+
+  try {
+    const r = await fetch('/api/compare', { method: 'POST', body: fd });
+    if (!r.ok) {
+      const txt = await r.text();
+      throw new Error(txt || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    saveJobId(d.job_id);
+    renderJob(d.job_id, {
+      status: 'running',
+      message: `Generating comparison from ${sources.length} samples...`,
+      script: 'Compare Polcurves',
+      input_files: sources.map(s => s.label),
+      is_comparison: true,
+    });
+    pollJob(d.job_id);
+    closeCompareModal();
+  } catch (e) {
+    errEl.textContent = String(e);
+    errEl.className = 'err';
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Generate Comparison';
+  }
+}
+
+function pollJob(id) {
+  if (polling[id]) return;
+  polling[id] = setInterval(() => poll(id), 2000);
 }
 
 // ── Lightbox ────────────────────────────────────
