@@ -224,6 +224,31 @@ def extract_axes_data(fig):
                 'color': bar_colors,
             })
 
+        # Text annotations (e.g. "OCV = 0.95V" boxes inside plots)
+        ad['texts'] = []
+        for txt in ax.texts:
+            try:
+                text_str = txt.get_text()
+                if not text_str or not text_str.strip():
+                    continue
+                pos = txt.get_position()
+                # transform may be 'data', 'axes' (axes fraction), 'figure'
+                trans = txt.get_transform()
+                # Determine if axes-fraction coords (most common for
+                # readout boxes via transform=ax.transAxes)
+                is_axes_frac = (trans == ax.transAxes)
+                ad['texts'].append({
+                    'text': text_str,
+                    'x': float(pos[0]),
+                    'y': float(pos[1]),
+                    'in_axes_fraction': bool(is_axes_frac),
+                    'ha': txt.get_ha(),
+                    'va': txt.get_va(),
+                    'fontsize': float(txt.get_fontsize()) if txt.get_fontsize() else 9.0,
+                })
+            except Exception:
+                pass
+
         out.append(ad)
 
     return out
@@ -514,6 +539,65 @@ def render_overlay_comparison(items, save_path=None, title=None,
         ax_target.grid(True, alpha=0.3)
         if ax_target.get_legend_handles_labels()[0]:
             ax_target.legend(fontsize=8, loc='best', framealpha=0.9)
+
+        # Combined multi-sample readout box: collect text annotations
+        # from each sample for this axis position, build a single combined box.
+        per_sample_texts = []  # [(sample_label, [text strings])]
+        # Use the box position from the reference sample (first sample's
+        # first text annotation for this axis), if any.
+        ref_x, ref_y = 0.03, 0.97
+        ref_ha, ref_va = 'left', 'top'
+        ref_fontsize = 8
+        any_text_found = False
+
+        for sample_idx, item in enumerate(items):
+            s_label = item['label']
+            s_ax_list = [a for a in item['sidecar'].get('data', {}).get('axes', [])
+                         if not a.get('is_twin')]
+            if ai >= len(s_ax_list):
+                continue
+            s_ax = s_ax_list[ai]
+            txts = s_ax.get('texts', [])
+            if not txts:
+                continue
+            # Combine all text annotations on this axis into one block per sample
+            sample_lines = []
+            for t in txts:
+                txt_str = t.get('text', '').strip()
+                if txt_str:
+                    sample_lines.append(txt_str)
+                    if not any_text_found:
+                        # Use first sample's first text box position as the anchor
+                        if t.get('in_axes_fraction'):
+                            ref_x = t.get('x', 0.03)
+                            ref_y = t.get('y', 0.97)
+                            ref_ha = t.get('ha', 'left')
+                            ref_va = t.get('va', 'top')
+                            ref_fontsize = t.get('fontsize', 8)
+                        any_text_found = True
+            if sample_lines:
+                per_sample_texts.append((s_label, sample_lines))
+
+        if per_sample_texts:
+            # Build single compact text box: each sample as a header line
+            # with its readouts indented below.
+            combined_lines = []
+            for s_label, lines in per_sample_texts:
+                combined_lines.append(f'━ {s_label} ━')
+                for ln in lines:
+                    # Indent multi-line annotations
+                    for sub in ln.split('\n'):
+                        combined_lines.append(f'  {sub}')
+            combined_text = '\n'.join(combined_lines)
+            ax_target.text(
+                ref_x, ref_y, combined_text,
+                transform=ax_target.transAxes,
+                fontsize=max(7, ref_fontsize - 1),
+                ha=ref_ha, va=ref_va,
+                family='monospace',
+                bbox=dict(boxstyle='round,pad=0.4',
+                          fc='lightyellow', alpha=0.92, ec='#888'),
+            )
 
     if title:
         fig.suptitle(title, fontsize=13, fontweight='bold')
