@@ -2008,9 +2008,21 @@ function openCompareModal() {
     const row = document.createElement('div');
     row.className = 'sample-row';
     row.dataset.key = key;
-    // Default label = sample_name + filename stem
-    const fnStem = s.filename.replace(/\.[^.]+$/, '');
-    const defaultLabel = `${s.sample_name} – ${fnStem}`;
+    // Derive plot_type from filename:
+    // 1. Strip subfolder path (polcurve/foo.png → foo.png)
+    // 2. Strip extension
+    // 3. Strip "{sample_name}-{script_short}-" prefix added by main.py
+    let stem = s.filename.split('/').pop().replace(/\.[^.]+$/, '');
+    // Try to strip the sample_name prefix
+    if (s.sample_name && stem.toLowerCase().startsWith(s.sample_name.toLowerCase() + '-')) {
+      stem = stem.substring(s.sample_name.length + 1);
+      // Strip the next dash-segment (script short name like "ElxPolCurve")
+      const dashIdx = stem.indexOf('-');
+      if (dashIdx > 0 && dashIdx < 25) {
+        stem = stem.substring(dashIdx + 1);
+      }
+    }
+    const defaultLabel = `${s.sample_name}_${stem}`;
     row.innerHTML = `
       <span class="job-name">${esc(s.filename)}<br><span style="color:#bbb">${esc(s.job_id)}</span></span>
       <input type="text" value="${esc(defaultLabel)}" placeholder="Comparison label">
@@ -2058,7 +2070,7 @@ async function submitComparison() {
     const sel = compareSelections.get(key);
     if (!sel) return;
     const label = row.querySelector('input[type=text]').value.trim()
-                  || `${sel.sample_name} – ${sel.filename}`;
+                  || `${sel.sample_name}_${sel.filename.split('/').pop().replace(/\.[^.]+$/, '')}`;
     sources.push({ job_id: sel.job_id, label, filename: sel.filename });
   });
 
