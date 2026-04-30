@@ -756,7 +756,7 @@ def plot_hupd_analysis(results, save_path=None):
     fig.tight_layout()
 
     if save_path:
-        save_with_sidecar(fig, save_path, dpi=200, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='ecsa_hupd', dpi=200, bbox_inches='tight')
         print(f'  Saved: {save_path}')
     return fig
 
@@ -798,7 +798,7 @@ def plot_co_stripping(results, save_path=None):
     fig.tight_layout()
 
     if save_path:
-        save_with_sidecar(fig, save_path, dpi=200, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='ecsa_co', dpi=200, bbox_inches='tight')
         print(f'  Saved: {save_path}')
     return fig
 
@@ -836,7 +836,7 @@ def plot_degradation(deg, save_path=None):
     fig.tight_layout()
 
     if save_path:
-        save_with_sidecar(fig, save_path, dpi=200, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='ecsa_degradation', dpi=200, bbox_inches='tight')
         print(f'  Saved: {save_path}')
     return fig
 
@@ -1140,7 +1140,7 @@ def plot_ecsa_overlay(all_results, save_path=None):
     fig.tight_layout()
 
     if save_path:
-        save_with_sidecar(fig, save_path, dpi=200, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='ecsa_overlay', dpi=200, bbox_inches='tight')
         print(f'  Saved: {save_path}')
     return fig
 
