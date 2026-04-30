@@ -28,6 +28,60 @@ from scripts.helpers.plot_compare import (
 )
 
 
+def _parse_condition_signature(filename):
+    """Extract a condition signature from a filename for matching.
+
+    Captures:
+      - Cell letter prefix (e.g. 'a' from 'a10', 'b' from 'b14')
+      - Temperature (e.g. '80C')
+      - Relative humidity (e.g. '100RH')
+      - Pressure (e.g. '0kPa', '150kPa')
+
+    Returns a string like 'b_80C_100RH_0kPa', or '' if no conditions found.
+    Two filenames with the same signature are considered "same conditions".
+
+    Example:
+      'polcurve_b14_IV_80C_100RH_OCV_0o3V_0o2H2_0o2Air_0kPa.png'
+      → 'b_80C_100RH_0kPa'
+      'polcurve_b8_IV_80C_100RH_OCV_0o3V_0o2H2_0o2Air_0kPa.png'
+      → 'b_80C_100RH_0kPa'  (same: only number differs)
+      'polcurve_a10_IV_80C_100RH_OCV_0o3V_0o2H2_0o2Air_0kPa.png'
+      → 'a_80C_100RH_0kPa'  (different: letter differs)
+    """
+    import re
+    if not filename:
+        return ''
+
+    # Strip path and extension
+    name = os.path.basename(filename)
+    name = os.path.splitext(name)[0]
+
+    parts = []
+
+    # Cell letter prefix: pattern like 'b14', 'a10', 'c2' — letter followed by digits
+    # We want the letter only. Use a word-boundary match.
+    cell_match = re.search(r'(?<![A-Za-z])([A-Za-z])(\d+)(?![A-Za-z])', name)
+    if cell_match:
+        parts.append(cell_match.group(1).lower())
+
+    # Temperature: digits followed by C (with optional o/° decimal)
+    t_match = re.search(r'(\d+(?:o\d+)?)C(?![A-Za-z])', name)
+    if t_match:
+        parts.append(f'{t_match.group(1)}C')
+
+    # Relative humidity: digits followed by RH
+    rh_match = re.search(r'(\d+(?:o\d+)?)RH', name, re.IGNORECASE)
+    if rh_match:
+        parts.append(f'{rh_match.group(1)}RH')
+
+    # Pressure: digits followed by kPa, barg, or psi
+    p_match = re.search(r'(\d+(?:o\d+)?)\s*(kPa|barg|psi|bar)', name, re.IGNORECASE)
+    if p_match:
+        parts.append(f'{p_match.group(1)}{p_match.group(2)}')
+
+    return '_'.join(parts) if parts else ''
+
+
 def _parse_metrics_from_text(text_str):
     """Parse 'KEY = VALUE' style readouts into a dict.
 
@@ -204,7 +258,9 @@ def export_comparison_excel(items, plot_type, filepath):
 def _compare_generic(items, output_dir, params):
     """Default generator: overlay + Excel."""
     plot_type = items[0]['sidecar'].get('plot_type', 'plot')
-    title = params.get('title') or f'{plot_type} Comparison'
+    fname_suffix = params.get('_filename_suffix', '')
+    title_suffix = params.get('_title_suffix', '')
+    title = params.get('title') or f'{plot_type} Comparison{title_suffix}'
     image_format = params.get('image_format', 'png')
 
     print(f"    {len(items)} samples:")
@@ -214,7 +270,8 @@ def _compare_generic(items, output_dir, params):
     out_files = []
 
     if image_format and image_format != 'none':
-        plot_path = os.path.join(output_dir, f'{plot_type}_comparison.{image_format}')
+        plot_path = os.path.join(output_dir,
+                                 f'{plot_type}{fname_suffix}_comparison.{image_format}')
         try:
             fig = render_overlay_comparison(items, save_path=plot_path, title=title)
             if fig:
@@ -225,7 +282,8 @@ def _compare_generic(items, output_dir, params):
             import traceback; traceback.print_exc()
 
     try:
-        xlsx_path = os.path.join(output_dir, f'{plot_type}_comparison.xlsx')
+        xlsx_path = os.path.join(output_dir,
+                                 f'{plot_type}{fname_suffix}_comparison.xlsx')
         export_comparison_excel(items, plot_type, xlsx_path)
         out_files.append(os.path.basename(xlsx_path))
     except Exception as e:
@@ -257,12 +315,20 @@ def run(input_dir, output_dir, params=None):
     if not sources:
         raise RuntimeError("No sources provided")
 
+    # Grouping mode:
+    #   'plot_type'             — group by plot_type only (default — all data combined)
+    #   'plot_type_conditions'  — also split by parsed condition signature
+    grouping_mode = p.get('grouping_mode', 'plot_type')
+
     print(f"\n{'='*60}")
     print(f"  Plot Comparison")
     print(f"{'='*60}")
     print(f"  Total selected: {len(sources)}")
+    print(f"  Grouping mode: {grouping_mode}")
 
-    by_type = {}
+    # Map: group_key → list of items
+    # group_key is either plot_type or (plot_type, condition_sig)
+    by_group = {}
     skipped = []
     for src in sources:
         label = src.get('label', src.get('job_id', '?'))
@@ -280,32 +346,47 @@ def run(input_dir, output_dir, params=None):
             continue
 
         plot_type = sidecar.get('plot_type', 'unknown')
-        by_type.setdefault(plot_type, []).append({
+
+        if grouping_mode == 'plot_type_conditions':
+            cond_sig = _parse_condition_signature(filename)
+            group_key = (plot_type, cond_sig)
+        else:
+            group_key = (plot_type, '')
+
+        by_group.setdefault(group_key, []).append({
             'label': label,
             'filename': filename,
             'sidecar': sidecar,
         })
 
-    if not by_type:
+    if not by_group:
         raise RuntimeError(
             "No comparable plot data found. Re-run source analyses with the "
             "latest scripts that write sidecar JSON files."
             + (f"\nSkipped: {', '.join(skipped)}" if skipped else "")
         )
 
-    print(f"\n  Grouped by plot type:")
-    for ptype, items in by_type.items():
-        print(f"    {ptype}: {len(items)} items")
+    print(f"\n  Grouped:")
+    for (ptype, csig), items in by_group.items():
+        sig_part = f" [{csig}]" if csig else ""
+        print(f"    {ptype}{sig_part}: {len(items)} items")
 
     all_output_files = []
-    for plot_type, items in by_type.items():
+    for (plot_type, cond_sig), items in by_group.items():
         if len(items) < 2:
-            print(f"\n  Skipping '{plot_type}': only {len(items)} item")
+            sig_part = f" [{cond_sig}]" if cond_sig else ""
+            print(f"\n  Skipping '{plot_type}{sig_part}': only {len(items)} item")
             continue
         gen = COMPARISON_GENERATORS.get(plot_type, _compare_generic)
-        print(f"\n  Generating '{plot_type}' comparison...")
+        # Pass condition sig in params so output filenames include it
+        gen_params = dict(p)
+        if cond_sig:
+            gen_params['_filename_suffix'] = f'_{cond_sig}'
+            gen_params['_title_suffix'] = f' [{cond_sig}]'
+        sig_part = f" [{cond_sig}]" if cond_sig else ""
+        print(f"\n  Generating '{plot_type}{sig_part}' comparison...")
         try:
-            out_files = gen(items, str(out), p)
+            out_files = gen(items, str(out), gen_params)
             all_output_files.extend(out_files)
         except Exception as e:
             print(f"    ✗ Generator failed: {e}")
@@ -321,5 +402,5 @@ def run(input_dir, output_dir, params=None):
     return {
         'status': 'success',
         'files_produced': output_files,
-        'plot_types': list(by_type.keys()),
+        'plot_types': sorted(set(k[0] for k in by_group.keys())),
     }
