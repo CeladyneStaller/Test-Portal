@@ -28,17 +28,30 @@ from openpyxl.utils import get_column_letter
 # ═══════════════════════════════════════════════════════════════════
 
 def find_sidecar(output_dir, filename):
-    """Locate sidecar JSON for a PNG: output_dir/_plot_data/{stem}.json"""
+    """Locate sidecar JSON for a PNG.
+
+    Handles filenames that may include a subfolder prefix
+    (e.g. 'polcurve/foo.png' → 'output_dir/polcurve/_plot_data/foo.json')
+    """
     p = Path(output_dir)
     if not p.exists():
         return None
-    base = Path(filename).stem
+    fn_path = Path(filename)
+    parent = fn_path.parent  # e.g. 'polcurve' or '.'
+    base = fn_path.stem      # e.g. 'foo'
+    # Try: output_dir/parent/_plot_data/base.json
+    if str(parent) != '.':
+        sidecar = p / parent / '_plot_data' / f'{base}.json'
+        if sidecar.exists():
+            return sidecar
+    # Fallback: output_dir/_plot_data/base.json
     sidecar = p / '_plot_data' / f'{base}.json'
     if sidecar.exists():
         return sidecar
-    sidecar2 = p / '_plot_data' / f'{filename}.json'
-    if sidecar2.exists():
-        return sidecar2
+    # Last resort: search recursively
+    for candidate in p.rglob(f'{base}.json'):
+        if '_plot_data' in candidate.parts:
+            return candidate
     return None
 
 
