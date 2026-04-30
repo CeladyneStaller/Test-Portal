@@ -405,6 +405,33 @@
     color: var(--accent);
   }
 
+  .file-group .fg-cmp {
+    padding: 5px 7px;
+    font-size: 13px;
+    background: transparent;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    cursor: pointer;
+    color: #666;
+    transition: all 0.15s;
+    margin-left: 2px;
+    line-height: 1;
+  }
+  .file-group .fg-cmp:hover {
+    border-color: #1F4E79;
+    color: #1F4E79;
+    background: rgba(31, 78, 121, 0.08);
+  }
+  .file-group .fg-cmp.on {
+    background: #1F4E79;
+    color: white;
+    border-color: #1F4E79;
+  }
+  .file-group .fg-cmp.on::after {
+    content: ' ✓';
+    font-weight: bold;
+  }
+
   /* ── Lightbox ───────────────────────────────── */
 
   .lightbox {
@@ -483,23 +510,6 @@
   }
 
   /* ── Compare feature ─────────────────────────── */
-  .compare-cb {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    margin-left: 12px;
-    font-size: 12px;
-    color: #555;
-    cursor: pointer;
-    user-select: none;
-  }
-  .compare-cb input[type=checkbox] {
-    cursor: pointer;
-    accent-color: #1F4E79;
-  }
-  .compare-cb:hover { color: #1F4E79; }
-  .compare-cb span { font-weight: 500; }
-
   .compare-fab {
     position: fixed;
     bottom: 24px;
@@ -1139,9 +1149,9 @@
 
   <div class="compare-modal" id="compareModal" onclick="closeCompareModalBg(event)">
     <div class="compare-modal-inner">
-      <h2>Polcurve Comparison</h2>
+      <h2>Plot Comparison</h2>
       <p style="margin: 0 0 12px 0; font-size: 13px; color: #555;">
-        Edit labels, then generate the comparison plot and Excel file.
+        Selected plots will be auto-grouped by type. Edit labels below.
       </p>
       <div id="compareSamples"></div>
       <div class="opts">
@@ -1861,9 +1871,22 @@ function renderFileLink(jobId, f) {
   const isImg = /\.(png|jpg|jpeg)$/i.test(f);
 
   if (isImg) {
+    // Skip compare checkbox for files inside subfolders (eis_fits/, etc.)
+    // and for the comparison output itself
+    const inSubfolder = f.includes('/');
+    const showCompare = !inSubfolder;
+    const selKey = `${jobId}::${f}`;
+    const isSelected = compareSelections.has(selKey);
+    const cmpBtn = showCompare
+      ? `<button class="fg-cmp ${isSelected ? 'on' : ''}"
+                 data-jobid="${esc(jobId)}" data-filename="${esc(f)}"
+                 onclick="onCompareToggle(this)"
+                 title="Select for comparison">&#128200;</button>`
+      : '';
     return `<span class="file-group">
       <button class="fg-view" onclick="openLightbox('${url}','${esc(name)}')">&#128200; ${esc(name)}</button>
       <a class="fg-dl" href="${url}" download title="Download">&#8615;</a>
+      ${cmpBtn}
     </span>`;
   } else {
     const ico = /\.xlsx?$/i.test(f) ? '&#128202;' : '&#128196;';
@@ -1925,58 +1948,42 @@ function renderJob(id, d) {
   const sampleLabel = d.sample_name ? `<span class="job-sample">${esc(d.sample_name)}</span>` : '';
   const scriptLabel = d.script ? `<span class="job-script">${esc(d.script)}</span>` : '';
 
-  // Determine if this job is comparable (same-script comparisons only)
-  const COMPARABLE_SCRIPTS = ['Electrolyzer Pol Curve', 'FC Polarization Curve',
-                               'Fuel Cell Full Analysis'];
-  const isComparable = d.status === 'complete' && d.script &&
-                        COMPARABLE_SCRIPTS.includes(d.script) &&
-                        !d.is_comparison;
-  const compareCheckbox = isComparable
-    ? `<label class="compare-cb" title="Select for comparison">
-         <input type="checkbox" data-jobid="${esc(id)}" data-script="${esc(d.script)}"
-                data-label="${esc(d.sample_name || id)}"
-                onchange="onCompareToggle(this)">
-         <span>Compare</span>
-       </label>`
-    : '';
-
   el.innerHTML = `
     <div class="job-row">
       <span class="job-id">${sampleLabel}${scriptLabel}${esc(id)}</span>
       <span class="tag ${tagCls}">${d.status}</span>
-      ${compareCheckbox}
     </div>
     ${active ? '<div class="bar-track"><div class="bar-fill"></div></div>' : ''}
     <div class="job-msg">${esc(d.message || '')}</div>
     ${dlAllHtml}${dlHtml}${errHtml}
   `;
 
-  // Restore checkbox state after re-render
-  if (isComparable && compareSelections.has(id)) {
-    const cb = el.querySelector('input[type=checkbox][data-jobid]');
-    if (cb) cb.checked = true;
-  }
-
   document.getElementById('jc').textContent = c.querySelectorAll('.job').length;
 }
 
 // ── Compare feature ────────────────────────────
-function onCompareToggle(checkbox) {
-  const jobId = checkbox.dataset.jobid;
-  const label = checkbox.dataset.label || jobId;
-  const script = checkbox.dataset.script;
-  if (checkbox.checked) {
-    // Enforce same-script comparisons
-    const existingScripts = new Set();
-    compareSelections.forEach(s => existingScripts.add(s.script));
-    if (existingScripts.size > 0 && !existingScripts.has(script)) {
-      alert(`Cannot mix script types in a comparison.\n\nAlready selected: ${[...existingScripts].join(', ')}\nThis job: ${script}`);
-      checkbox.checked = false;
-      return;
-    }
-    compareSelections.set(jobId, { label, script });
+// State: Map keyed by "jobId::filename" → {job_id, filename, sample_name}
+function onCompareToggle(btn) {
+  const jobId = btn.dataset.jobid;
+  const filename = btn.dataset.filename;
+  const key = `${jobId}::${filename}`;
+  if (compareSelections.has(key)) {
+    compareSelections.delete(key);
+    btn.classList.remove('on');
   } else {
-    compareSelections.delete(jobId);
+    // Look up sample_name from job metadata for default label
+    const jobEl = document.getElementById('j-' + jobId);
+    let sampleName = jobId;
+    if (jobEl) {
+      const sampleSpan = jobEl.querySelector('.job-sample');
+      if (sampleSpan) sampleName = sampleSpan.textContent;
+    }
+    compareSelections.set(key, {
+      job_id: jobId,
+      filename: filename,
+      sample_name: sampleName,
+    });
+    btn.classList.add('on');
   }
   updateCompareFab();
 }
@@ -1994,19 +2001,22 @@ function updateCompareFab() {
 
 function openCompareModal() {
   if (compareSelections.size < 2) {
-    alert('Select at least 2 jobs to compare.');
+    alert('Select at least 2 plots to compare.');
     return;
   }
   const wrap = document.getElementById('compareSamples');
   wrap.innerHTML = '';
-  compareSelections.forEach((s, jobId) => {
+  compareSelections.forEach((s, key) => {
     const row = document.createElement('div');
     row.className = 'sample-row';
-    row.dataset.jobid = jobId;
+    row.dataset.key = key;
+    // Default label = sample_name + filename stem
+    const fnStem = s.filename.replace(/\.[^.]+$/, '');
+    const defaultLabel = `${s.sample_name} – ${fnStem}`;
     row.innerHTML = `
-      <span class="job-name">${esc(jobId)}</span>
-      <input type="text" value="${esc(s.label)}" placeholder="Sample label">
-      <button class="remove-btn" onclick="removeCompareSample('${esc(jobId)}')">Remove</button>
+      <span class="job-name">${esc(s.filename)}<br><span style="color:#bbb">${esc(s.job_id)}</span></span>
+      <input type="text" value="${esc(defaultLabel)}" placeholder="Comparison label">
+      <button class="remove-btn" onclick="removeCompareSample('${esc(key)}')">Remove</button>
     `;
     wrap.appendChild(row);
   });
@@ -2024,13 +2034,15 @@ function closeCompareModalBg(e) {
   if (e.target.id === 'compareModal') closeCompareModal();
 }
 
-function removeCompareSample(jobId) {
-  compareSelections.delete(jobId);
-  // Uncheck the matching checkbox in the job list
-  const cb = document.querySelector(`input[type=checkbox][data-jobid="${jobId}"]`);
-  if (cb) cb.checked = false;
+function removeCompareSample(key) {
+  compareSelections.delete(key);
+  // Find and unhighlight matching button
+  const [jobId, filename] = key.split('::');
+  const btn = document.querySelector(
+    `button.fg-cmp[data-jobid="${jobId}"][data-filename="${filename}"]`
+  );
+  if (btn) btn.classList.remove('on');
   updateCompareFab();
-  // Re-open modal to refresh list, or close if too few left
   if (compareSelections.size < 2) {
     closeCompareModal();
   } else {
@@ -2042,12 +2054,14 @@ async function submitComparison() {
   const errEl = document.getElementById('compareErr');
   errEl.style.display = 'none';
 
-  // Collect updated labels from modal inputs
   const sources = [];
   document.querySelectorAll('#compareSamples .sample-row').forEach(row => {
-    const jobId = row.dataset.jobid;
-    const label = row.querySelector('input[type=text]').value.trim() || jobId;
-    sources.push({ job_id: jobId, label });
+    const key = row.dataset.key;
+    const sel = compareSelections.get(key);
+    if (!sel) return;
+    const label = row.querySelector('input[type=text]').value.trim()
+                  || `${sel.sample_name} – ${sel.filename}`;
+    sources.push({ job_id: sel.job_id, label, filename: sel.filename });
   });
 
   if (sources.length < 2) {
@@ -2066,7 +2080,6 @@ async function submitComparison() {
   btn.textContent = 'Submitting...';
 
   const fd = new FormData();
-  fd.append('comparison_type', 'polcurve_overlay');
   fd.append('sources', JSON.stringify(sources));
   fd.append('title', title);
   fd.append('image_format', 'png');
@@ -2083,9 +2096,9 @@ async function submitComparison() {
     saveJobId(d.job_id);
     renderJob(d.job_id, {
       status: 'running',
-      message: `Generating comparison from ${sources.length} samples...`,
+      message: `Generating comparison from ${sources.length} plots...`,
       script: 'Compare Polcurves',
-      input_files: sources.map(s => s.label),
+      input_files: sources.map(s => `${s.label} / ${s.filename}`),
       is_comparison: true,
     });
     pollJob(d.job_id);
