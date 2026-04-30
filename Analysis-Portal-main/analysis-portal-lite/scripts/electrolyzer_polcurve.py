@@ -17,6 +17,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from scripts.helpers.plot_compare import save_with_sidecar
 from pathlib import Path
 
 
@@ -109,6 +110,7 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
 # ═══════════════════════════════════════════════════════════════════
 #  Column detection
 # ═══════════════════════════════════════════════════════════════════
+
 
 def _clean_path(p):
     p = p.strip()
@@ -788,8 +790,33 @@ def plot_cycles(cycles, geo_area, title=None, save_path=None):
 
     plt.tight_layout()
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
+
+        # Write sidecar JSON for comparison feature
+        cycles_data = []
+        for i, cyc in enumerate(cycles):
+            mode_tag = cyc[0].get('cycle_label', '') if cyc else ''
+            cycles_data.append({
+                'cycle_num': i + 1,
+                'mode': mode_tag,
+                'j': [d['j'] for d in cyc],
+                'V': [d['V'] for d in cyc],
+            })
+        # Representative cycle = last cycle with the most common point count
+        # (skip incomplete final cycles)
+        if cycles_data:
+            point_counts = [len(c['j']) for c in cycles_data]
+            from collections import Counter
+            most_common_n = Counter(point_counts).most_common(1)[0][0]
+            # Find the highest-index cycle with the most common point count
+            rep_idx = len(cycles_data) - 1
+            for i in range(len(cycles_data) - 1, -1, -1):
+                if point_counts[i] == most_common_n:
+                    rep_idx = i
+                    break
+        else:
+            rep_idx = 0
     else:
         plt.show()
 
@@ -1057,7 +1084,7 @@ def plot_j_vs_cycle(cycles, v_targets, save_path=None):
     plt.tight_layout()
     plt.subplots_adjust(bottom=0.18)
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -1120,7 +1147,7 @@ def plot_v_vs_cycle(cycles, j_targets, save_path=None):
     plt.tight_layout()
     plt.subplots_adjust(bottom=0.18)
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -1181,7 +1208,7 @@ def plot_v_and_hfr_vs_cycle(cycles, j_targets, eis_mapped, save_path=None):
     plt.tight_layout()
     plt.subplots_adjust(bottom=0.18)
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -1427,7 +1454,7 @@ def plot_v_and_losses_vs_cycle(cycle_nums, v_values, losses,
     plt.tight_layout()
     plt.subplots_adjust(bottom=0.18)
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -1490,7 +1517,7 @@ def plot_eis_losses_vs_cycle(cycle_nums, dep_values, losses,
     plt.tight_layout()
     plt.subplots_adjust(bottom=0.18)
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -2357,7 +2384,7 @@ def plot_eis_fit(eis, fit_result, geo_area=5.0, title=None, save_path=None):
     plt.subplots_adjust(left=0.08, right=0.95, top=0.90, bottom=0.12,
                         wspace=0.35, hspace=0.35)
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"    Plot saved: {save_path}")
     else:
         plt.show()
@@ -2389,7 +2416,7 @@ def plot_nyquist(eis, hfr_result, geo_area=5.0, save_path=None):
 
     plt.tight_layout()
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -2469,7 +2496,7 @@ def plot_eis_for_ir_correction(eis_at_j, geo_area=5.0, cycle_num=None,
 
     plt.tight_layout()
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -2677,7 +2704,7 @@ def plot_j_and_hfr_vs_cycle(cycles, v_targets, eis_mapped, save_path=None):
     plt.tight_layout()
     plt.subplots_adjust(bottom=0.18)
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -2873,7 +2900,7 @@ def plot_ir_correction(j_pol, V_pol, V_irfree, j_hfr, asr_hfr, asr_interp,
 
     plt.tight_layout()
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -3217,7 +3244,7 @@ def plot_coth_analysis(coth_result, tafel_result, eis_fits, cycle_num=None,
 
     plt.tight_layout()
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -3342,7 +3369,7 @@ def plot_coth_model_fit(coth_result, tafel_result, cycle_num=None,
 
     plt.tight_layout()
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -3571,7 +3598,7 @@ def plot_fit(fr, save_path=None):
 
     plt.tight_layout()
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -3757,7 +3784,7 @@ def plot_j_and_losses_vs_cycle(cycle_nums, j_values, losses,
     plt.tight_layout()
     plt.subplots_adjust(bottom=0.18)
     if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
