@@ -22,6 +22,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from scripts.helpers.plot_compare import save_with_sidecar
 from pathlib import Path
 
 
@@ -462,7 +463,7 @@ def plot_voltage_vs_time(t_h, V, deg, j_hold, pc_t=None, save_path=None):
     fig.legend(h, l, loc='lower center', bbox_to_anchor=(0.5, -0.02),
                ncol=len(h), fontsize=9, frameon=True, fancybox=True)
     plt.tight_layout(); plt.subplots_adjust(bottom=0.18)
-    if save_path: fig.savefig(save_path, bbox_inches='tight'); print(f"  Plot saved: {save_path}")
+    if save_path: save_with_sidecar(fig, save_path, bbox_inches='tight'); print(f"  Plot saved: {save_path}")
     else: plt.show()
 
 def plot_deg_rolling(deg, save_path=None):
@@ -474,7 +475,7 @@ def plot_deg_rolling(deg, save_path=None):
     ax.set_xlabel('Time [hours]'); ax.set_ylabel('Rate [μV/hr]')
     ax.set_title('Rolling Degradation Rate', fontweight='bold')
     ax.set_xlim(left=0); ax.legend(); ax.grid(True, alpha=0.3); plt.tight_layout()
-    if save_path: fig.savefig(save_path, bbox_inches='tight'); print(f"  Plot saved: {save_path}")
+    if save_path: save_with_sidecar(fig, save_path, bbox_inches='tight'); print(f"  Plot saved: {save_path}")
     else: plt.show()
 
 def plot_hfr_vs_time(eis_p, save_path=None):
@@ -485,7 +486,7 @@ def plot_hfr_vs_time(eis_p, save_path=None):
     ax.set_xlabel('Time [hours]'); ax.set_ylabel('ASR [mΩ·cm²]')
     ax.set_title('HFR (ASR) vs. Time', fontweight='bold')
     ax.set_xlim(left=0); ax.grid(True, alpha=0.3); plt.tight_layout()
-    if save_path: fig.savefig(save_path, bbox_inches='tight'); print(f"  Plot saved: {save_path}")
+    if save_path: save_with_sidecar(fig, save_path, bbox_inches='tight'); print(f"  Plot saved: {save_path}")
     else: plt.show()
 
 def plot_polcurve_evolution(pcs, save_path=None):
@@ -508,7 +509,7 @@ def plot_polcurve_evolution(pcs, save_path=None):
     ax.set_xlabel('j [A/cm²]'); ax.set_ylabel('V [V]')
     ax.set_title('Polarization Curve Evolution', fontweight='bold'); ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    if save_path: fig.savefig(save_path, bbox_inches='tight'); print(f"  Plot saved: {save_path}")
+    if save_path: save_with_sidecar(fig, save_path, bbox_inches='tight'); print(f"  Plot saved: {save_path}")
     else: plt.show()
 
 def plot_asr_vs_j_evolution(pcs, save_path=None):
@@ -526,7 +527,7 @@ def plot_asr_vs_j_evolution(pcs, save_path=None):
     ax.set_xlabel('j [A/cm²]'); ax.set_ylabel('ASR [mΩ·cm²]')
     ax.set_title('ASR vs. Current Density Evolution', fontweight='bold'); ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    if save_path: fig.savefig(save_path, bbox_inches='tight'); print(f"  Plot saved: {save_path}")
+    if save_path: save_with_sidecar(fig, save_path, bbox_inches='tight'); print(f"  Plot saved: {save_path}")
     else: plt.show()
 
 def plot_loss_evolution(pcs, v_target=1.8, save_path=None):
@@ -553,7 +554,7 @@ def plot_loss_evolution(pcs, v_target=1.8, save_path=None):
                ncol=min(len(h1)+len(h2), 6), fontsize=9, frameon=True, fancybox=True)
     ax1.set_title(f'Performance & Loss Evolution at {v_target:.2f} V', fontweight='bold')
     plt.tight_layout(); plt.subplots_adjust(bottom=0.18)
-    if save_path: fig.savefig(save_path, bbox_inches='tight'); print(f"  Plot saved: {save_path}")
+    if save_path: save_with_sidecar(fig, save_path, bbox_inches='tight'); print(f"  Plot saved: {save_path}")
     else: plt.show()
 
 
