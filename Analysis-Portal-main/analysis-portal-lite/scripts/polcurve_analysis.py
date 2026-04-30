@@ -48,8 +48,8 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
                 if any(kw in f.name.upper() for kw in KEYWORDS)]
     files = filtered if filtered else all_files
 
+    has_fcd_files = any(f.suffix.lower() == '.fcd' for f in files)
     has_tab_files = any(f.suffix.lower() in ('.fcd', '.tsv') for f in files)
-    delimiter = '\t' if has_tab_files else ','
 
     filepaths = [str(f) for f in files]
     labels = [f.stem for f in files]
@@ -57,15 +57,51 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
     from scripts.helpers.conditions import img_ext_from_params
     image_ext = img_ext_from_params(p)
 
+    # ── Format detection ──
+    # For .fcd / Scribner files, use Scribner preset (tab-delimited,
+    # multi-line header parsed via parse_fcd_header, HFR in mΩ).
+    # For CSV files, use simple defaults that the user can override via params.
+    if has_fcd_files:
+        # Scribner preset — actual columns/skip will be re-detected per file
+        # by parse_fcd_header inside run_batch
+        delimiter = '\t'
+        skip = 51
+        j_col = 1
+        v_col = 5
+        hfr_col = 20
+        hfr_scale = 0.001  # mΩ → Ω
+        current_is_total = True
+        mode_col = 28
+        mode_exclude = {5}
+        condition_cols = {
+            'T_cell (C)': 13, 'T_anode_dp (C)': 14, 'H2_flow (slpm)': 15,
+            'T_cathode_dp (C)': 17, 'Air_flow (slpm)': 18,
+        }
+    else:
+        delimiter = '\t' if has_tab_files else ','
+        skip = 1
+        j_col = 0
+        v_col = 1
+        hfr_col = None
+        hfr_scale = 1.0
+        current_is_total = True
+        mode_col = None
+        mode_exclude = None
+        condition_cols = None
+
     results = run_batch(
         filepaths, labels,
         geo_area=float(p.get('geo_area', 5.0)),
         delimiter=delimiter,
-        skip=1,
-        j_col=0,
-        v_col=1,
-        hfr_col=None,
-        current_is_total=True,
+        skip=skip,
+        j_col=j_col,
+        v_col=v_col,
+        hfr_col=hfr_col,
+        hfr_scale=hfr_scale,
+        current_is_total=current_is_total,
+        mode_col=mode_col,
+        mode_exclude=mode_exclude,
+        condition_cols=condition_cols,
         tafel_j_min=float(p.get('tafel_j_min', 0.01)),
         tafel_j_max=float(p.get('tafel_j_max', 0.10)),
         save_dir=str(output_dir),
