@@ -1,13 +1,14 @@
 """
-Plot Comparison Tool — sidecar JSON edition
-============================================
-Reads sidecar JSON files (`_plot_data/{plotname}.json`) written by the
-plotting functions in electrolyzer_polcurve.py / polcurve_analysis.py /
-fuelcell_analysis.py. Each JSON has the underlying numerical data for one
-plot, so the comparison can faithfully overlay PNGs from multiple analyses.
+Generic Plot Comparison Tool
+============================
+Reads sidecar JSON files written by `save_with_sidecar()` and overlays
+them in a same-shape figure with distinct colors per source.
 
-Auto-groups selected plots by `plot_type` and runs the appropriate
-comparison generator for each group. Currently supports: polcurve.
+Auto-groups selected plots by `plot_type` (the filename stem) and runs
+one comparison per group via the generic overlay renderer.
+
+Custom per-type generators may be registered in COMPARISON_GENERATORS;
+unknown types fall back to the generic overlay renderer.
 """
 
 import os
@@ -22,235 +23,130 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
-
-# ═══════════════════════════════════════════════════════════════════
-#  Sidecar loading
-# ═══════════════════════════════════════════════════════════════════
-
-def find_sidecar(output_dir, filename):
-    """Locate sidecar JSON for a PNG.
-
-    Handles filenames that may include a subfolder prefix
-    (e.g. 'polcurve/foo.png' → 'output_dir/polcurve/_plot_data/foo.json')
-    """
-    p = Path(output_dir)
-    if not p.exists():
-        return None
-    fn_path = Path(filename)
-    parent = fn_path.parent  # e.g. 'polcurve' or '.'
-    base = fn_path.stem      # e.g. 'foo'
-    # Try: output_dir/parent/_plot_data/base.json
-    if str(parent) != '.':
-        sidecar = p / parent / '_plot_data' / f'{base}.json'
-        if sidecar.exists():
-            return sidecar
-    # Fallback: output_dir/_plot_data/base.json
-    sidecar = p / '_plot_data' / f'{base}.json'
-    if sidecar.exists():
-        return sidecar
-    # Last resort: search recursively
-    for candidate in p.rglob(f'{base}.json'):
-        if '_plot_data' in candidate.parts:
-            return candidate
-    return None
+from scripts.helpers.plot_compare import (
+    find_sidecar, load_sidecar, render_overlay_comparison
+)
 
 
-def load_sidecar(sidecar_path):
-    try:
-        with open(sidecar_path, 'r') as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"  ✗ Failed to load sidecar {sidecar_path}: {e}")
-        return None
-
-
-def get_representative_cycle(sidecar):
-    """Get the representative cycle dict from a polcurve sidecar."""
-    data = sidecar.get('data', {})
-    cycles = data.get('cycles', [])
-    if not cycles:
-        return None
-    rep_idx = data.get('representative_cycle_idx')
-    if rep_idx is not None and 0 <= rep_idx < len(cycles):
-        return cycles[rep_idx]
-    return cycles[-1]
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  Polcurve overlay plot + Excel
-# ═══════════════════════════════════════════════════════════════════
-
-def plot_polcurve_overlay(samples, show_raw=True, show_irfree=True,
-                          title="Polcurve Comparison", save_path=None):
-    fig, ax = plt.subplots(figsize=(10, 7), dpi=120)
-
-    cmap = plt.get_cmap('tab10')
-    colors = [cmap(i % 10) for i in range(len(samples))]
-
-    has_any_irfree = any(s['cycle'].get('V_irfree') is not None for s in samples)
-    plot_irfree = show_irfree and has_any_irfree
-
-    for i, s in enumerate(samples):
-        c = colors[i]
-        label = s.get('label', f'Sample {i+1}')
-        cyc = s['cycle']
-
-        j = np.array(cyc.get('j', []))
-        V = np.array(cyc.get('V', []))
-        if len(j) == 0:
-            continue
-
-        order = np.argsort(j)
-        j = j[order]
-        V = V[order]
-
-        if show_raw:
-            raw_label = label if not plot_irfree else f'{label} (raw)'
-            ax.plot(j, V, 'o-', color=c, ms=5, lw=1.5,
-                    label=raw_label, alpha=0.85)
-
-        if plot_irfree and cyc.get('V_irfree') is not None:
-            V_irf = np.array(cyc['V_irfree'])
-            if len(V_irf) == len(j):
-                V_irf = V_irf[order]
-                ax.plot(j, V_irf, 's--', color=c, ms=4, lw=1.2,
-                        label=f'{label} (iR-free)', alpha=0.85,
-                        markerfacecolor='none')
-
-    xlabel = 'Current density  j  [A/cm²]'
-    ylabel = 'Cell voltage  [V]'
-    if samples and samples[0].get('metadata'):
-        md = samples[0]['metadata']
-        xlabel = md.get('xlabel', xlabel)
-        ylabel = md.get('ylabel', ylabel)
-
-    ax.set_xlabel(xlabel, fontsize=12)
-    ax.set_ylabel(ylabel, fontsize=12)
-    ax.set_title(title, fontsize=13, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=9, loc='best', framealpha=0.9)
-    ax.set_xlim(left=0)
-
-    plt.tight_layout()
-    if save_path:
-        fig.savefig(save_path, bbox_inches='tight')
-        print(f"  Plot saved: {save_path}")
-    else:
-        plt.show()
-    return fig
-
-
-def export_polcurve_excel(samples, filepath, plot_irfree=False):
+def export_comparison_excel(items, plot_type, filepath):
+    """Side-by-side Excel: one sheet per source axis, each sample's traces."""
     wb = Workbook()
-    ws = wb.active
-    ws.title = "Polcurve Comparison"
+    wb.remove(wb.active)
 
     hdr_font = Font(bold=True, color="FFFFFF")
     hdr_fill = PatternFill("solid", fgColor="1F4E79")
     label_fill = PatternFill("solid", fgColor="2E75B6")
     label_font = Font(bold=True, color="FFFFFF")
 
-    col = 1
-    for s in samples:
-        label = s.get('label', 'Sample')
-        cyc = s['cycle']
-        n_cols_per_sample = 2 + (1 if plot_irfree and cyc.get('V_irfree') is not None else 0)
-        col_end = col + n_cols_per_sample - 1
+    ref_axes = items[0]['sidecar'].get('data', {}).get('axes', [])
+    primary_axes = [a for a in ref_axes if not a.get('is_twin')]
 
-        cell = ws.cell(row=1, column=col, value=label)
-        cell.font = label_font
-        cell.fill = label_fill
-        cell.alignment = Alignment(horizontal='center')
-        if col_end > col:
-            ws.merge_cells(start_row=1, start_column=col,
-                           end_row=1, end_column=col_end)
+    for ax_idx, ref_ax in enumerate(primary_axes):
+        sheet_name = f'Axis {ax_idx + 1}'
+        if ref_ax.get('title'):
+            t = str(ref_ax['title'])[:25]
+            sheet_name = f'A{ax_idx + 1} - {t}'[:31]
+        ws = wb.create_sheet(sheet_name)
 
-        headers = ['j (A/cm²)', 'V (V)']
-        if plot_irfree and cyc.get('V_irfree') is not None:
-            headers.append('V_iR-free (V)')
-        for hi, h in enumerate(headers):
-            cell = ws.cell(row=2, column=col + hi, value=h)
-            cell.font = hdr_font
-            cell.fill = hdr_fill
+        col = 1
+        for item in items:
+            label = item['label']
+            s_axes = [a for a in item['sidecar'].get('data', {}).get('axes', [])
+                      if not a.get('is_twin')]
+            if ax_idx >= len(s_axes):
+                continue
+            s_ad = s_axes[ax_idx]
+            traces = s_ad.get('lines', []) + s_ad.get('scatters', [])
+            if not traces:
+                continue
+
+            n_cols_per_sample = 2 * len(traces)
+            col_end = col + n_cols_per_sample - 1
+
+            cell = ws.cell(row=1, column=col, value=label)
+            cell.font = label_font
+            cell.fill = label_fill
             cell.alignment = Alignment(horizontal='center')
-            ws.column_dimensions[get_column_letter(col + hi)].width = 14
+            if col_end > col:
+                ws.merge_cells(start_row=1, start_column=col,
+                               end_row=1, end_column=col_end)
 
-        j_arr = cyc.get('j', [])
-        V_arr = cyc.get('V', [])
-        Virf_arr = cyc.get('V_irfree') or []
+            xlabel = s_ad.get('xlabel', 'x')
+            ylabel = s_ad.get('ylabel', 'y')
 
-        if j_arr:
-            order = sorted(range(len(j_arr)), key=lambda i: j_arr[i])
-            for ri, i in enumerate(order):
-                ws.cell(row=ri + 3, column=col, value=round(float(j_arr[i]), 6))
-                ws.cell(row=ri + 3, column=col + 1, value=round(float(V_arr[i]), 5))
-                if plot_irfree and Virf_arr and i < len(Virf_arr):
-                    v = Virf_arr[i]
-                    if v is not None:
-                        ws.cell(row=ri + 3, column=col + 2,
-                                value=round(float(v), 5))
+            for ti, trace in enumerate(traces):
+                trace_label = trace.get('label') or f'Series {ti + 1}'
+                tcol = col + 2 * ti
+                tc = ws.cell(row=2, column=tcol, value=trace_label)
+                tc.font = Font(bold=True, italic=True, color="333333")
+                tc.alignment = Alignment(horizontal='center')
+                ws.merge_cells(start_row=2, start_column=tcol,
+                               end_row=2, end_column=tcol + 1)
+                for cc, h in enumerate([xlabel, ylabel]):
+                    hc = ws.cell(row=3, column=tcol + cc, value=h)
+                    hc.font = hdr_font
+                    hc.fill = hdr_fill
+                    hc.alignment = Alignment(horizontal='center')
+                    ws.column_dimensions[get_column_letter(tcol + cc)].width = 14
 
-        col = col_end + 2
+                xs = trace.get('x', [])
+                ys = trace.get('y', [])
+                for ri, (x, y) in enumerate(zip(xs, ys)):
+                    if x is not None and isinstance(x, (int, float)):
+                        ws.cell(row=ri + 4, column=tcol, value=round(float(x), 6))
+                    elif x is not None:
+                        ws.cell(row=ri + 4, column=tcol, value=x)
+                    if y is not None and isinstance(y, (int, float)):
+                        ws.cell(row=ri + 4, column=tcol + 1, value=round(float(y), 6))
+                    elif y is not None:
+                        ws.cell(row=ri + 4, column=tcol + 1, value=y)
 
+            col = col_end + 2
+
+    if not wb.sheetnames:
+        wb.create_sheet('Empty')
     wb.save(filepath)
     print(f"  Excel exported: {filepath}")
 
 
-# ═══════════════════════════════════════════════════════════════════
-#  Comparison generators by plot type
-# ═══════════════════════════════════════════════════════════════════
-
-def _compare_polcurves(items, output_dir, params):
-    """items: [{label, filename, sidecar}]"""
-    show_raw = str(params.get('show_raw', 'true')).lower() in ('true', '1', 'yes')
-    show_irfree = str(params.get('show_irfree', 'true')).lower() in ('true', '1', 'yes')
-    title = params.get('title', 'Polcurve Comparison')
+def _compare_generic(items, output_dir, params):
+    """Default generator: overlay + Excel."""
+    plot_type = items[0]['sidecar'].get('plot_type', 'plot')
+    title = params.get('title') or f'{plot_type} Comparison'
     image_format = params.get('image_format', 'png')
 
-    samples = []
-    for item in items:
-        label = item['label']
-        sidecar = item['sidecar']
-        rep_cycle = get_representative_cycle(sidecar)
-        if rep_cycle is None:
-            print(f"    ✗ {label}: no cycle data")
-            continue
-        samples.append({
-            'label': label,
-            'cycle': rep_cycle,
-            'metadata': sidecar.get('metadata', {}),
-        })
-        print(f"    ✓ {label}: cycle {rep_cycle.get('cycle_num', '?')} "
-              f"({len(rep_cycle.get('j', []))} pts), "
-              f"V_irfree {'yes' if rep_cycle.get('V_irfree') else 'no'}")
-
-    if len(samples) < 2:
-        return []
+    print(f"    {len(items)} samples:")
+    for it in items:
+        print(f"      - {it['label']}")
 
     out_files = []
-    if image_format and image_format != 'none':
-        plot_path = os.path.join(output_dir, f'polcurve_comparison.{image_format}')
-        plot_polcurve_overlay(samples, show_raw=show_raw, show_irfree=show_irfree,
-                              title=title, save_path=plot_path)
-        plt.close('all')
-        out_files.append(os.path.basename(plot_path))
 
-    plot_irfree = show_irfree and any(s['cycle'].get('V_irfree') is not None for s in samples)
-    xlsx_path = os.path.join(output_dir, 'polcurve_comparison.xlsx')
-    export_polcurve_excel(samples, xlsx_path, plot_irfree=plot_irfree)
-    out_files.append(os.path.basename(xlsx_path))
+    if image_format and image_format != 'none':
+        plot_path = os.path.join(output_dir, f'{plot_type}_comparison.{image_format}')
+        try:
+            fig = render_overlay_comparison(items, save_path=plot_path, title=title)
+            if fig:
+                plt.close(fig)
+                out_files.append(os.path.basename(plot_path))
+        except Exception as e:
+            print(f"    ✗ Failed to render comparison: {e}")
+            import traceback; traceback.print_exc()
+
+    try:
+        xlsx_path = os.path.join(output_dir, f'{plot_type}_comparison.xlsx')
+        export_comparison_excel(items, plot_type, xlsx_path)
+        out_files.append(os.path.basename(xlsx_path))
+    except Exception as e:
+        print(f"    ✗ Failed to export Excel: {e}")
+        import traceback; traceback.print_exc()
 
     return out_files
 
 
 COMPARISON_GENERATORS = {
-    'polcurve': _compare_polcurves,
+    # Override generic for specific plot types here if needed.
 }
 
-
-# ═══════════════════════════════════════════════════════════════════
-#  Entry point
-# ═══════════════════════════════════════════════════════════════════
 
 def run(input_dir, output_dir, params=None):
     p = params or {}
@@ -274,7 +170,6 @@ def run(input_dir, output_dir, params=None):
     print(f"{'='*60}")
     print(f"  Total selected: {len(sources)}")
 
-    # Load all sidecars and group by plot_type
     by_type = {}
     skipped = []
     for src in sources:
@@ -284,10 +179,9 @@ def run(input_dir, output_dir, params=None):
 
         sidecar_path = find_sidecar(output_dir_s, filename)
         if sidecar_path is None:
-            print(f"  ✗ {label} ({filename}): no sidecar in {output_dir_s}/_plot_data/")
+            print(f"  ✗ {label} ({filename}): no sidecar")
             skipped.append(f"{label}/{filename}")
             continue
-
         sidecar = load_sidecar(sidecar_path)
         if sidecar is None:
             skipped.append(f"{label}/{filename}")
@@ -302,8 +196,8 @@ def run(input_dir, output_dir, params=None):
 
     if not by_type:
         raise RuntimeError(
-            "No comparable plot data found. Re-run the source analyses with "
-            "the latest scripts that write sidecar JSON files."
+            "No comparable plot data found. Re-run source analyses with the "
+            "latest scripts that write sidecar JSON files."
             + (f"\nSkipped: {', '.join(skipped)}" if skipped else "")
         )
 
@@ -314,20 +208,21 @@ def run(input_dir, output_dir, params=None):
     all_output_files = []
     for plot_type, items in by_type.items():
         if len(items) < 2:
-            print(f"\n  Skipping '{plot_type}': only {len(items)} item, need ≥2")
+            print(f"\n  Skipping '{plot_type}': only {len(items)} item")
             continue
-        gen = COMPARISON_GENERATORS.get(plot_type)
-        if gen is None:
-            print(f"\n  Skipping '{plot_type}': no comparison generator yet")
-            continue
-        print(f"\n  Generating comparison for '{plot_type}'...")
-        out_files = gen(items, str(out), p)
-        all_output_files.extend(out_files)
+        gen = COMPARISON_GENERATORS.get(plot_type, _compare_generic)
+        print(f"\n  Generating '{plot_type}' comparison...")
+        try:
+            out_files = gen(items, str(out), p)
+            all_output_files.extend(out_files)
+        except Exception as e:
+            print(f"    ✗ Generator failed: {e}")
+            import traceback; traceback.print_exc()
 
     if not all_output_files:
         raise RuntimeError(
-            "No comparison outputs generated. Need ≥2 plots of the same "
-            "supported type (currently: " + ", ".join(COMPARISON_GENERATORS.keys()) + ")"
+            "No comparison outputs generated. Check that ≥2 plots of the "
+            "same type were selected and their sidecars are valid."
         )
 
     output_files = [f.name for f in out.iterdir() if f.is_file()]
