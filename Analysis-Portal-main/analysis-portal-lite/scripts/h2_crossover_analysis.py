@@ -307,7 +307,7 @@ def plot_crossover(r, save_path=None):
 
     fig.tight_layout()
     if save_path:
-        save_with_sidecar(fig, save_path, dpi=200, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='crossover', dpi=200, bbox_inches='tight')
         print(f'  Plot: {save_path}')
     return fig
 
