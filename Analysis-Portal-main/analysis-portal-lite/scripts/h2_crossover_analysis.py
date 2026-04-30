@@ -21,6 +21,7 @@ from scipy import interpolate, stats
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from scripts.helpers.plot_compare import save_with_sidecar
 
 
 def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
@@ -306,7 +307,7 @@ def plot_crossover(r, save_path=None):
 
     fig.tight_layout()
     if save_path:
-        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, dpi=200, bbox_inches='tight')
         print(f'  Plot: {save_path}')
     return fig
 
