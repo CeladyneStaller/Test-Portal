@@ -156,6 +156,43 @@ def parse_fcd_header(filepath):
     return result
 
 
+def _write_plot_sidecar(plot_path, plot_type, data, metadata=None):
+    """Write JSON sidecar with plot data for the comparison feature."""
+    import json
+    import os
+    if not plot_path:
+        return
+    plot_dir = os.path.dirname(plot_path)
+    plot_name = os.path.splitext(os.path.basename(plot_path))[0]
+    sidecar_dir = os.path.join(plot_dir, '_plot_data')
+    os.makedirs(sidecar_dir, exist_ok=True)
+    sidecar_path = os.path.join(sidecar_dir, f'{plot_name}.json')
+
+    def _convert(obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj) if not np.isnan(obj) else None
+        if isinstance(obj, dict):
+            return {k: _convert(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_convert(x) for x in obj]
+        return obj
+
+    payload = {
+        'plot_type': plot_type,
+        'data': _convert(data),
+        'metadata': _convert(metadata or {}),
+    }
+    try:
+        with open(sidecar_path, 'w') as f:
+            json.dump(payload, f, indent=2, allow_nan=False, default=str)
+    except Exception as e:
+        print(f"  Warning: failed to write sidecar JSON {sidecar_path}: {e}")
+
+
 def _clean_path(p):
     """Clean a file path from drag-drop artifacts and smart quotes."""
     p = p.strip()
@@ -1519,6 +1556,42 @@ def plot_polcurve(results, save_path=None):
     if save_path:
         fig.savefig(save_path, dpi=200, bbox_inches='tight')
         print(f'  Saved: {save_path}')
+
+        # Write sidecar JSON for comparison feature
+        cycles_data = []
+        cycles_raw = results.get('_cycles_raw', [])
+        if cycles_raw:
+            for c in cycles_raw:
+                cycles_data.append({
+                    'cycle_num': int(c.get('cycle_number', 0)),
+                    'mode': c.get('direction', ''),
+                    'j': list(c.get('j', [])),
+                    'V': list(c.get('V', [])),
+                    'HFR_ASR': list(c.get('HFR', [])) if c.get('HFR') is not None else None,
+                })
+        rep_cycle = {
+            'cycle_num': len(cycles_data) + 1 if cycles_data else 1,
+            'mode': 'representative',
+            'j': list(results['j']),
+            'V': list(results['V']),
+            'V_irfree': (list(results['V_irfree'])
+                         if results.get('V_irfree') is not None else None),
+            'HFR_ASR': (list(results['HFR_ASR'])
+                        if results.get('HFR_ASR') is not None else None),
+        }
+        cycles_data.append(rep_cycle)
+
+        _write_plot_sidecar(save_path, 'polcurve',
+                            data={'cycles': cycles_data,
+                                  'n_cycles': len(cycles_data),
+                                  'representative_cycle_idx': len(cycles_data) - 1},
+                            metadata={'title': title,
+                                      'xlabel': 'Current density (A/cm²)',
+                                      'ylabel': 'Voltage (V)',
+                                      'cell_type': 'fuelcell',
+                                      'OCV': results.get('OCV'),
+                                      'V_at_1Acm2': results.get('V_at_1Acm2'),
+                                      'peak_power_W_cm2': results.get('peak_power_W_cm2')})
     return fig
 
 
