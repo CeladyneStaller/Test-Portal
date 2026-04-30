@@ -790,7 +790,7 @@ def plot_cycles(cycles, geo_area, title=None, save_path=None):
 
     plt.tight_layout()
     if save_path:
-        save_with_sidecar(fig, save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='polcurve', bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
 
         # Write sidecar JSON for comparison feature
@@ -1208,7 +1208,7 @@ def plot_v_and_hfr_vs_cycle(cycles, j_targets, eis_mapped, save_path=None):
     plt.tight_layout()
     plt.subplots_adjust(bottom=0.18)
     if save_path:
-        save_with_sidecar(fig, save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='losses_vs_cycle', bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -2384,7 +2384,7 @@ def plot_eis_fit(eis, fit_result, geo_area=5.0, title=None, save_path=None):
     plt.subplots_adjust(left=0.08, right=0.95, top=0.90, bottom=0.12,
                         wspace=0.35, hspace=0.35)
     if save_path:
-        save_with_sidecar(fig, save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='eis_fit', bbox_inches='tight')
         print(f"    Plot saved: {save_path}")
     else:
         plt.show()
@@ -2416,7 +2416,7 @@ def plot_nyquist(eis, hfr_result, geo_area=5.0, save_path=None):
 
     plt.tight_layout()
     if save_path:
-        save_with_sidecar(fig, save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='nyquist', bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -2496,7 +2496,7 @@ def plot_eis_for_ir_correction(eis_at_j, geo_area=5.0, cycle_num=None,
 
     plt.tight_layout()
     if save_path:
-        save_with_sidecar(fig, save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='eis_for_ir', bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -2704,7 +2704,7 @@ def plot_j_and_hfr_vs_cycle(cycles, v_targets, eis_mapped, save_path=None):
     plt.tight_layout()
     plt.subplots_adjust(bottom=0.18)
     if save_path:
-        save_with_sidecar(fig, save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='j_vs_cycle', bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -2900,7 +2900,7 @@ def plot_ir_correction(j_pol, V_pol, V_irfree, j_hfr, asr_hfr, asr_interp,
 
     plt.tight_layout()
     if save_path:
-        save_with_sidecar(fig, save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='ir_correction', bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -3244,7 +3244,7 @@ def plot_coth_analysis(coth_result, tafel_result, eis_fits, cycle_num=None,
 
     plt.tight_layout()
     if save_path:
-        save_with_sidecar(fig, save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='CLR_analysis', bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -3369,7 +3369,7 @@ def plot_coth_model_fit(coth_result, tafel_result, cycle_num=None,
 
     plt.tight_layout()
     if save_path:
-        save_with_sidecar(fig, save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='CLR_model_fit', bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
@@ -3598,7 +3598,7 @@ def plot_fit(fr, save_path=None):
 
     plt.tight_layout()
     if save_path:
-        save_with_sidecar(fig, save_path, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, plot_type='model_fit', bbox_inches='tight')
         print(f"  Plot saved: {save_path}")
     else:
         plt.show()
