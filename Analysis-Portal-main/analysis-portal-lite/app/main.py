@@ -310,7 +310,6 @@ async def upload_and_run(
 
 @app.post("/api/compare")
 async def compare_jobs(
-    comparison_type: str = Form(...),
     sources: str = Form(...),
     title: str = Form(""),
     image_format: str = Form("png"),
@@ -318,10 +317,11 @@ async def compare_jobs(
     show_irfree: str = Form("true"),
 ):
     """
-    Run a comparison across multiple existing jobs.
+    Run a comparison across selected PNGs from multiple jobs.
 
-    sources: JSON string of [{"job_id": str, "label": str}, ...]
-    comparison_type: "polcurve_overlay" (more types in future)
+    sources: JSON string of [{"job_id", "label", "filename"}, ...]
+    The filename refers to a specific PNG in the job's output directory.
+    Auto-groups by sidecar plot_type and runs the matching generator(s).
     """
     import json as _json
 
@@ -331,22 +331,19 @@ async def compare_jobs(
         raise HTTPException(400, "Invalid sources JSON")
 
     if not sources_list or len(sources_list) < 2:
-        raise HTTPException(400, "Need at least 2 sources to compare")
+        raise HTTPException(400, "Need at least 2 plots to compare")
 
-    # Map comparison_type to script name
-    type_to_script = {
-        "polcurve_overlay": "Compare Polcurves",
-    }
-    if comparison_type not in type_to_script:
-        raise HTTPException(400, f"Unknown comparison type: {comparison_type}")
-    script = type_to_script[comparison_type]
+    script = "Compare Polcurves"
 
-    # Validate sources and resolve their output directories
+    # Validate sources and resolve their output directories + sidecars
     with jobs_lock:
         validated_sources = []
         for src in sources_list:
             jid = src.get('job_id')
             label = src.get('label', jid)
+            filename = src.get('filename', '')
+            if not filename:
+                raise HTTPException(400, f"Source missing filename: {src}")
             if jid not in jobs:
                 raise HTTPException(404, f"Job not found: {jid}")
             job = jobs[jid]
@@ -356,9 +353,18 @@ async def compare_jobs(
             output_dir = JOBS_DIR / jid / "output"
             if not output_dir.exists():
                 raise HTTPException(404, f"Output directory not found for job {jid}")
+            # Sanity check: sidecar exists for this filename
+            base = Path(filename).stem
+            sidecar = output_dir / '_plot_data' / f'{base}.json'
+            if not sidecar.exists():
+                raise HTTPException(400,
+                    f"No sidecar JSON for {filename} in job {jid}. "
+                    f"This plot does not yet support comparison or the analysis "
+                    f"was run before sidecar support was added.")
             validated_sources.append({
                 'job_id': jid,
                 'label': label or jid,
+                'filename': filename,
                 'output_dir': str(output_dir),
             })
 
@@ -369,14 +375,13 @@ async def compare_jobs(
     input_dir.mkdir(parents=True)
     output_dir.mkdir(parents=True)
 
-    # Pack params for the comparison script
     user_params = {
         'sources': _json.dumps(validated_sources),
         'show_raw': show_raw,
         'show_irfree': show_irfree,
         'image_format': image_format,
-        'title': title or f"Comparison ({len(validated_sources)} samples)",
-        'sample_name': 'Comparison',  # used as filename prefix
+        'title': title or f"Comparison ({len(validated_sources)} plots)",
+        'sample_name': 'Comparison',
     }
 
     with jobs_lock:
@@ -385,7 +390,7 @@ async def compare_jobs(
             "status": "running",
             "message": f"Running {script}...",
             "script": script,
-            "input_files": [s['label'] for s in validated_sources],
+            "input_files": [f"{s['label']} / {s['filename']}" for s in validated_sources],
             "submitted_at": datetime.now().isoformat(),
             "is_comparison": True,
             "source_jobs": [s['job_id'] for s in validated_sources],
@@ -397,7 +402,6 @@ async def compare_jobs(
     future.add_done_callback(lambda f: _on_job_done(job_id, f))
 
     return {"job_id": job_id, "status": "running",
-            "comparison_type": comparison_type,
             "n_sources": len(validated_sources)}
 
 
