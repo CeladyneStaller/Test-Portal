@@ -430,6 +430,28 @@
     border-color: #1F4E79;
   }
 
+  .batch-cmp-btn, .sample-cmp-btn {
+    background: rgba(31, 78, 121, 0.1);
+    border: 1px solid #1F4E79;
+    color: #1F4E79;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    margin-left: 8px;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .batch-cmp-btn:hover, .sample-cmp-btn:hover {
+    background: #1F4E79;
+    color: white;
+  }
+  .sample-cmp-btn {
+    margin-left: auto;
+    margin-right: 8px;
+  }
+
   /* ── Lightbox ───────────────────────────────── */
 
   .lightbox {
@@ -1165,10 +1187,17 @@
         </label>
       </div>
       <div id="compareErr" style="display:none"></div>
-      <div class="actions">
+      <div class="actions" style="flex-wrap: wrap; gap: 8px;">
         <button class="btn btn-secondary" onclick="closeCompareModal()">Cancel</button>
-        <button class="btn btn-primary" id="compareGoBtn" onclick="submitComparison()">
-          Generate Comparison
+        <button class="btn btn-primary" id="compareGoBtnAll"
+                onclick="submitComparison('plot_type')"
+                title="Group only by plot type — all selected data on the same plot per type">
+          Compare All Together
+        </button>
+        <button class="btn btn-primary" id="compareGoBtnConditions"
+                onclick="submitComparison('plot_type_conditions')"
+                title="Also split by conditions (cell letter, T, RH, P) — generates separate comparisons per condition group">
+          Compare Same Conditions
         </button>
       </div>
     </div>
@@ -1915,8 +1944,19 @@ function renderJob(id, d) {
     dlHtml = groupNames.map(label => {
       const filesInGroup = groups[label];
       if (!filesInGroup || !filesInGroup.length) return '';
+      // Filter to comparable PNGs (exclude subfolder / hidden plot data)
+      const comparablePngs = filesInGroup.filter(f =>
+        /\.(png|jpg|jpeg)$/i.test(f) &&
+        !f.includes('_plot_data') && !f.includes('eis_fits/')
+      );
+      const batchBtn = (comparablePngs.length > 0 && d.status === 'complete')
+        ? `<button class="batch-cmp-btn"
+                   onclick="batchSelectGroup('${esc(id)}', ${JSON.stringify(comparablePngs).replace(/"/g, '&quot;')})"
+                   title="Select all plots in this group for comparison">📊 Compare All</button>`
+        : '';
       const header = `<div class="group-header">
         <span class="group-label">${esc(label)}</span>
+        ${batchBtn}
         <a class="dl-all" href="/api/download-zip/${id}?group=${encodeURIComponent(label)}" download title="Download all as ZIP">&#8615; Download All</a>
       </div>`;
       const links = '<div class="dl-row">' + filesInGroup.map(f => {
@@ -1946,10 +1986,25 @@ function renderJob(id, d) {
   const sampleLabel = d.sample_name ? `<span class="job-sample">${esc(d.sample_name)}</span>` : '';
   const scriptLabel = d.script ? `<span class="job-script">${esc(d.script)}</span>` : '';
 
+  // Per-sample batch compare button: select every comparable PNG in this job
+  let sampleBatchBtn = '';
+  if (d.status === 'complete' && d.output_files && d.output_files.length && !d.is_comparison) {
+    const comparablePngs = d.output_files.filter(f =>
+      /\.(png|jpg|jpeg)$/i.test(f) &&
+      !f.includes('_plot_data') && !f.includes('eis_fits/')
+    );
+    if (comparablePngs.length > 0) {
+      sampleBatchBtn = `<button class="sample-cmp-btn"
+                                onclick="batchSelectGroup('${esc(id)}', ${JSON.stringify(comparablePngs).replace(/"/g, '&quot;')})"
+                                title="Select all plots from this sample for comparison">📊 Compare All Plots</button>`;
+    }
+  }
+
   el.innerHTML = `
     <div class="job-row">
       <span class="job-id">${sampleLabel}${scriptLabel}${esc(id)}</span>
       <span class="tag ${tagCls}">${d.status}</span>
+      ${sampleBatchBtn}
     </div>
     ${active ? '<div class="bar-track"><div class="bar-fill"></div></div>' : ''}
     <div class="job-msg">${esc(d.message || '')}</div>
@@ -1983,6 +2038,51 @@ function onCompareToggle(btn) {
     });
     btn.classList.add('on');
   }
+  updateCompareFab();
+}
+
+function batchSelectGroup(jobId, filenames) {
+  // Add every file in the list to compareSelections (toggle-on style:
+  // if all are already selected, this acts as deselect-all).
+  const jobEl = document.getElementById('j-' + jobId);
+  let sampleName = jobId;
+  if (jobEl) {
+    const sampleSpan = jobEl.querySelector('.job-sample');
+    if (sampleSpan) sampleName = sampleSpan.textContent;
+  }
+
+  // Check if all are already selected → deselect all
+  const allSelected = filenames.every(f => compareSelections.has(`${jobId}::${f}`));
+
+  filenames.forEach(f => {
+    const key = `${jobId}::${f}`;
+    if (allSelected) {
+      compareSelections.delete(key);
+    } else {
+      compareSelections.set(key, {
+        job_id: jobId,
+        filename: f,
+        sample_name: sampleName,
+      });
+    }
+  });
+
+  // Update visual state of any matching buttons
+  filenames.forEach(f => {
+    const btn = document.querySelector(
+      `button.fg-cmp[data-jobid="${jobId}"][data-filename="${f}"]`
+    );
+    if (btn) {
+      if (allSelected) {
+        btn.classList.remove('on');
+        btn.innerHTML = '☐ Compare';
+      } else {
+        btn.classList.add('on');
+        btn.innerHTML = '☑ Compare';
+      }
+    }
+  });
+
   updateCompareFab();
 }
 
@@ -2060,7 +2160,8 @@ function removeCompareSample(key) {
   }
 }
 
-async function submitComparison() {
+async function submitComparison(groupingMode) {
+  groupingMode = groupingMode || 'plot_type';
   const errEl = document.getElementById('compareErr');
   errEl.style.display = 'none';
 
@@ -2085,9 +2186,10 @@ async function submitComparison() {
   const showRaw = document.getElementById('compareShowRaw').checked;
   const showIrFree = document.getElementById('compareShowIrFree').checked;
 
-  const btn = document.getElementById('compareGoBtn');
-  btn.disabled = true;
-  btn.textContent = 'Submitting...';
+  const btnAll = document.getElementById('compareGoBtnAll');
+  const btnCond = document.getElementById('compareGoBtnConditions');
+  if (btnAll) btnAll.disabled = true;
+  if (btnCond) btnCond.disabled = true;
 
   const fd = new FormData();
   fd.append('sources', JSON.stringify(sources));
@@ -2095,6 +2197,7 @@ async function submitComparison() {
   fd.append('image_format', 'png');
   fd.append('show_raw', showRaw ? 'true' : 'false');
   fd.append('show_irfree', showIrFree ? 'true' : 'false');
+  fd.append('grouping_mode', groupingMode);
 
   try {
     const r = await fetch('/api/compare', { method: 'POST', body: fd });
@@ -2104,9 +2207,11 @@ async function submitComparison() {
     }
     const d = await r.json();
     saveJobId(d.job_id);
+    const modeLabel = groupingMode === 'plot_type_conditions'
+      ? 'same-conditions' : 'all-together';
     renderJob(d.job_id, {
       status: 'running',
-      message: `Generating comparison from ${sources.length} plots...`,
+      message: `Generating ${modeLabel} comparison from ${sources.length} plots...`,
       script: 'Compare Polcurves',
       input_files: sources.map(s => `${s.label} / ${s.filename}`),
       is_comparison: true,
@@ -2118,8 +2223,8 @@ async function submitComparison() {
     errEl.className = 'err';
     errEl.style.display = 'block';
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Generate Comparison';
+    if (btnAll) btnAll.disabled = false;
+    if (btnCond) btnCond.disabled = false;
   }
 }
 
