@@ -58,6 +58,34 @@ def _is_j_column(s):
     return cl.startswith('jacm') or cl.startswith('ja/cm') or cl == 'j'
 
 
+def _is_irfree_column(s):
+    """Check if a header string represents an iR-free voltage column.
+    Handles many formats: V_iR-free, V iR-free, V_irfree, V iRfree,
+    iR-free, irfree, V_IR_free, etc.
+    """
+    if not s:
+        return False
+    cl = str(s).lower()
+    # Strip non-alpha chars except keep meaning
+    for ch in ' ()[]{}-_/\\.,':
+        cl = cl.replace(ch, '')
+    # Now look for 'irfree' substring
+    return 'irfree' in cl
+
+
+def _is_v_column(s):
+    """Check if a header string represents a plain voltage column (not iR-free)."""
+    if not s:
+        return False
+    if _is_irfree_column(s):
+        return False
+    cl = str(s).lower().strip()
+    # Match: 'v', 'v (v)', 'v(v)', 'v [v]', 'voltage', 'voltage (v)'
+    cl_compact = cl.replace(' ', '').replace('(', '').replace(')', '').replace('[','').replace(']','')
+    return (cl_compact == 'v' or cl_compact == 'vv' or
+            cl_compact.startswith('voltage'))
+
+
 def extract_last_cycle_polcurve(xlsx_path):
     """
     Extract the last cycle's j, V, and optional iR-free V from a polcurve
@@ -149,10 +177,14 @@ def _extract_long_format(rows, sheet_name, xlsx_path):
     v_col = _find_col(headers, 'v_setpoint') or _find_col(headers, 'voltage')
     if v_col is None:
         for ci, h in enumerate(headers):
-            if h and str(h).strip().lower() in ('v', 'v [v]', 'v(v)'):
+            if _is_v_column(h):
                 v_col = ci
                 break
-    virfree_col = _find_col(headers, 'irfree') or _find_col(headers, 'iR-free')
+    virfree_col = None
+    for ci, h in enumerate(headers):
+        if _is_irfree_column(h):
+            virfree_col = ci
+            break
 
     if cycle_col is None or j_col is None or v_col is None:
         print(f"  ✗ Long-format columns not found (cycle={cycle_col}, "
@@ -257,16 +289,13 @@ def _extract_wide_format(rows, sheet_name, xlsx_path):
         if ci >= len(headers):
             break
         h = headers[ci]
-        if h and isinstance(h, str):
-            hl = h.lower()
-            if hl.startswith('v ') or hl.startswith('v(') or hl == 'v (v)':
-                if v_col is None:
-                    v_col = ci
-            if 'irfree' in hl.replace(' ', '').replace('-', '').replace('_', '').lower():
-                virfree_col = ci
+        if _is_v_column(h) and v_col is None:
+            v_col = ci
+        if _is_irfree_column(h):
+            virfree_col = ci
 
     if v_col is None:
-        v_col = last_j_col + 2  # j, j_mA, V
+        v_col = last_j_col + 2  # fallback: j, j_mA, V
 
     j_vals, V_vals, Virf_vals = [], [], []
     for row in rows[header_row_idx + 1:]:
