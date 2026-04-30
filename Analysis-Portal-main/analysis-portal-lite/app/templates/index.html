@@ -1869,9 +1869,10 @@ function renderFileLink(jobId, f) {
   const isImg = /\.(png|jpg|jpeg)$/i.test(f);
 
   if (isImg) {
-    // Skip compare checkbox for files inside subfolders (eis_fits/, etc.)
-    const inSubfolder = f.includes('/');
-    const showCompare = !inSubfolder;
+    // Skip compare for sidecar data folder and per-EIS fit detail plots
+    const isHiddenData = f.includes('_plot_data');
+    const isEisDetail = f.includes('eis_fits/');
+    const showCompare = !isHiddenData && !isEisDetail;
     const selKey = `${jobId}::${f}`;
     const isSelected = compareSelections.has(selKey);
     const cmpBtn = showCompare
