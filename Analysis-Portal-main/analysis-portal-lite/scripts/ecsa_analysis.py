@@ -22,6 +22,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from scripts.helpers.plot_compare import save_with_sidecar
 from matplotlib.gridspec import GridSpec
 from scipy.signal import savgol_filter
 from scipy.integrate import trapezoid
@@ -755,7 +756,7 @@ def plot_hupd_analysis(results, save_path=None):
     fig.tight_layout()
 
     if save_path:
-        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, dpi=200, bbox_inches='tight')
         print(f'  Saved: {save_path}')
     return fig
 
@@ -797,7 +798,7 @@ def plot_co_stripping(results, save_path=None):
     fig.tight_layout()
 
     if save_path:
-        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, dpi=200, bbox_inches='tight')
         print(f'  Saved: {save_path}')
     return fig
 
@@ -835,7 +836,7 @@ def plot_degradation(deg, save_path=None):
     fig.tight_layout()
 
     if save_path:
-        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, dpi=200, bbox_inches='tight')
         print(f'  Saved: {save_path}')
     return fig
 
@@ -1139,7 +1140,7 @@ def plot_ecsa_overlay(all_results, save_path=None):
     fig.tight_layout()
 
     if save_path:
-        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, dpi=200, bbox_inches='tight')
         print(f'  Saved: {save_path}')
     return fig
 
