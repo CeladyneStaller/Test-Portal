@@ -18,6 +18,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from scripts.helpers.plot_compare import save_with_sidecar
 import csv
 import os
 import glob
@@ -370,7 +371,7 @@ def plot_ocv(time, voltage, label, save_path=None):
 
     fig.tight_layout()
     if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, dpi=150, bbox_inches='tight')
         print(f'  Saved: {save_path}')
     return fig
 
@@ -411,7 +412,7 @@ def plot_ocv_overlay(datasets, save_path=None):
     fig.tight_layout()
 
     if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        save_with_sidecar(fig, save_path, dpi=150, bbox_inches='tight')
         print(f'  Saved: {save_path}')
     return fig
 
