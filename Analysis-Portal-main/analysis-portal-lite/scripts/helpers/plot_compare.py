@@ -537,8 +537,9 @@ def render_overlay_comparison(items, save_path=None, title=None,
         except Exception:
             pass
         ax_target.grid(True, alpha=0.3)
-        if ax_target.get_legend_handles_labels()[0]:
-            ax_target.legend(fontsize=8, loc='best', framealpha=0.9)
+        # Note: per-axis legend deliberately not shown - we use a single
+        # figure-level legend at the bottom (added after the loop) to avoid
+        # long sample names shrinking the plot area.
 
         # Combined multi-sample readout box: collect text annotations
         # from each sample for this axis position, build a single combined box.
@@ -602,7 +603,41 @@ def render_overlay_comparison(items, save_path=None, title=None,
     if title:
         fig.suptitle(title, fontsize=13, fontweight='bold')
 
+    # Figure-level legend at the bottom: one entry per sample with its color.
+    # Single legend keeps long sample names from shrinking the plot area.
+    from matplotlib.lines import Line2D
+    legend_handles = [
+        Line2D([0], [0], color=sample_colors[i], lw=2.5,
+               marker='o', markersize=6,
+               label=item['label'])
+        for i, item in enumerate(items)
+    ]
+    n_samples = len(items)
+    # Calculate columns: aim for at most 4 per row, fewer if names are long
+    max_label_len = max(len(item['label']) for item in items)
+    if max_label_len > 30:
+        ncol = 1
+    elif max_label_len > 18:
+        ncol = min(2, n_samples)
+    else:
+        ncol = min(4, n_samples)
+
+    fig.legend(
+        handles=legend_handles,
+        loc='lower center',
+        ncol=ncol,
+        fontsize=9,
+        framealpha=0.95,
+        bbox_to_anchor=(0.5, -0.02),
+        frameon=True,
+    )
+
     plt.tight_layout()
+    # Reserve space at the bottom for the legend (proportional to nrows of legend)
+    n_legend_rows = (n_samples + ncol - 1) // ncol
+    bottom_margin = 0.04 + 0.035 * n_legend_rows
+    fig.subplots_adjust(bottom=bottom_margin)
+
     if save_path:
         fig.savefig(save_path, bbox_inches='tight', dpi=150)
         print(f"  Plot saved: {save_path}")
