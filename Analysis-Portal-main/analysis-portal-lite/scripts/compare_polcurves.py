@@ -28,8 +28,36 @@ from scripts.helpers.plot_compare import (
 )
 
 
+def _parse_metrics_from_text(text_str):
+    """Parse 'KEY = VALUE' style readouts into a dict.
+
+    Handles patterns like:
+      'OCV = 0.95 V'
+      'Peak P = 560 mW/cm²'
+      'V @ 1 A/cm² = 0.559 V'
+      'b = 5851 mV/dec\nj₀ = 1.40e-02 A/cm²'
+    """
+    import re
+    result = {}
+    if not text_str:
+        return result
+    # Split on newlines, then look for "key = value" or "key: value"
+    for line in text_str.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        # Try " = " first, then ":"
+        m = re.match(r'^(.+?)\s*=\s*(.+)$', line) or re.match(r'^(.+?):\s*(.+)$', line)
+        if m:
+            key = m.group(1).strip()
+            val = m.group(2).strip()
+            if key and val:
+                result[key] = val
+    return result
+
+
 def export_comparison_excel(items, plot_type, filepath):
-    """Side-by-side Excel: one sheet per source axis, each sample's traces."""
+    """Side-by-side Excel: Metrics sheet + one sheet per source axis."""
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -41,6 +69,70 @@ def export_comparison_excel(items, plot_type, filepath):
     ref_axes = items[0]['sidecar'].get('data', {}).get('axes', [])
     primary_axes = [a for a in ref_axes if not a.get('is_twin')]
 
+    # ─────────────────────────────────────────────────────────────────
+    # Sheet 1: Metrics summary parsed from plot text annotations
+    # ─────────────────────────────────────────────────────────────────
+    # Collect all (axis_idx, sample_label, parsed_metrics) tuples
+    sample_metrics = {}  # {sample_label: {metric_key: value}}
+    for item in items:
+        s_label = item['label']
+        sample_metrics[s_label] = {}
+        s_axes = [a for a in item['sidecar'].get('data', {}).get('axes', [])
+                  if not a.get('is_twin')]
+        for ax_idx, s_ax in enumerate(s_axes):
+            for txt in s_ax.get('texts', []):
+                parsed = _parse_metrics_from_text(txt.get('text', ''))
+                # Prefix metric keys with axis title to disambiguate
+                ax_title = primary_axes[ax_idx].get('title', '') if ax_idx < len(primary_axes) else ''
+                ax_prefix = f'[{ax_title}] ' if ax_title else f'[Axis {ax_idx+1}] '
+                for k, v in parsed.items():
+                    qualified_key = f'{ax_prefix}{k}'
+                    sample_metrics[s_label][qualified_key] = v
+
+    # Collect union of all metric keys across samples
+    all_keys = []
+    seen = set()
+    for s_label, mets in sample_metrics.items():
+        for k in mets:
+            if k not in seen:
+                all_keys.append(k)
+                seen.add(k)
+
+    if all_keys:  # only create Metrics sheet if any metrics found
+        ws = wb.create_sheet('Metrics')
+        # Header row: Sample | metric1 | metric2 | ...
+        ws.cell(row=1, column=1, value='Sample').font = hdr_font
+        ws.cell(row=1, column=1).fill = hdr_fill
+        ws.cell(row=1, column=1).alignment = Alignment(horizontal='center')
+        for ki, k in enumerate(all_keys):
+            c = ws.cell(row=1, column=ki + 2, value=k)
+            c.font = hdr_font
+            c.fill = hdr_fill
+            c.alignment = Alignment(horizontal='center', wrap_text=True)
+            ws.column_dimensions[get_column_letter(ki + 2)].width = 22
+        ws.column_dimensions['A'].width = 28
+        # Data rows
+        for ri, item in enumerate(items):
+            s_label = item['label']
+            ws.cell(row=ri + 2, column=1, value=s_label).font = Font(bold=True)
+            for ki, k in enumerate(all_keys):
+                v = sample_metrics.get(s_label, {}).get(k, '')
+                # Try numeric conversion
+                try:
+                    # Strip units (e.g. "0.95 V" → 0.95)
+                    import re as _re
+                    m = _re.match(r'^([-+]?\d+\.?\d*(?:[eE][-+]?\d+)?)', str(v).strip())
+                    if m:
+                        ws.cell(row=ri + 2, column=ki + 2, value=float(m.group(1)))
+                    else:
+                        ws.cell(row=ri + 2, column=ki + 2, value=str(v))
+                except Exception:
+                    ws.cell(row=ri + 2, column=ki + 2, value=str(v))
+        ws.row_dimensions[1].height = 30
+
+    # ─────────────────────────────────────────────────────────────────
+    # Per-axis trace data sheets
+    # ─────────────────────────────────────────────────────────────────
     for ax_idx, ref_ax in enumerate(primary_axes):
         sheet_name = f'Axis {ax_idx + 1}'
         if ref_ax.get('title'):
