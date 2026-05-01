@@ -215,6 +215,9 @@ async def index():
 @app.get("/api/scripts")
 async def list_scripts():
     from scripts import SCRIPT_REGISTRY, SCRIPT_PARAMS
+    # Internal scripts that should not appear in the user-facing dropdown.
+    # These are invoked via dedicated endpoints (e.g. /api/compare) instead.
+    INTERNAL_ONLY = {"Compare Polcurves"}
     return {
         "scripts": [
             {
@@ -223,6 +226,7 @@ async def list_scripts():
                 "params": SCRIPT_PARAMS.get(name, []),
             }
             for name, fn in SCRIPT_REGISTRY.items()
+            if name not in INTERNAL_ONLY
         ]
     }
 
@@ -239,6 +243,12 @@ async def upload_and_run(
     from scripts import SCRIPT_REGISTRY
     if script not in SCRIPT_REGISTRY:
         raise HTTPException(400, f"Unknown script: {script}")
+    # Block internal-only scripts from the upload endpoint
+    INTERNAL_ONLY = {"Compare Polcurves"}
+    if script in INTERNAL_ONLY:
+        raise HTTPException(400,
+            f"'{script}' is invoked via the Compare Selected workflow, "
+            f"not the upload flow. Select PNGs and click Compare instead.")
     if not files and not zipfile:
         raise HTTPException(400, "No files uploaded")
 
