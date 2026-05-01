@@ -124,9 +124,8 @@ def export_comparison_excel(items, plot_type, filepath):
     primary_axes = [a for a in ref_axes if not a.get('is_twin')]
 
     # ─────────────────────────────────────────────────────────────────
-    # Sheet 1: Metrics summary parsed from plot text annotations
+    # Sheet 1: Metrics summary parsed from plot text annotations + ref lines
     # ─────────────────────────────────────────────────────────────────
-    # Collect all (axis_idx, sample_label, parsed_metrics) tuples
     sample_metrics = {}  # {sample_label: {metric_key: value}}
     for item in items:
         s_label = item['label']
@@ -134,14 +133,20 @@ def export_comparison_excel(items, plot_type, filepath):
         s_axes = [a for a in item['sidecar'].get('data', {}).get('axes', [])
                   if not a.get('is_twin')]
         for ax_idx, s_ax in enumerate(s_axes):
+            ax_title = primary_axes[ax_idx].get('title', '') if ax_idx < len(primary_axes) else ''
+            ax_prefix = f'[{ax_title}] ' if ax_title else f'[Axis {ax_idx+1}] '
+            # 1. Parse from text box annotations
             for txt in s_ax.get('texts', []):
                 parsed = _parse_metrics_from_text(txt.get('text', ''))
-                # Prefix metric keys with axis title to disambiguate
-                ax_title = primary_axes[ax_idx].get('title', '') if ax_idx < len(primary_axes) else ''
-                ax_prefix = f'[{ax_title}] ' if ax_title else f'[Axis {ax_idx+1}] '
                 for k, v in parsed.items():
-                    qualified_key = f'{ax_prefix}{k}'
-                    sample_metrics[s_label][qualified_key] = v
+                    sample_metrics[s_label][f'{ax_prefix}{k}'] = v
+            # 2. Parse from axhline/axvline labels (e.g. EIS HFR markers)
+            for ref_line in s_ax.get('axhlines', []) + s_ax.get('axvlines', []):
+                lbl = (ref_line.get('label') or '').strip()
+                if lbl and '=' in lbl:
+                    parsed = _parse_metrics_from_text(lbl)
+                    for k, v in parsed.items():
+                        sample_metrics[s_label][f'{ax_prefix}{k}'] = v
 
     # Collect union of all metric keys across samples
     all_keys = []
