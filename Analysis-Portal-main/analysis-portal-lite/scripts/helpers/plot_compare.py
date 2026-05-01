@@ -157,6 +157,7 @@ def extract_axes_data(fig):
         for line in ax.get_lines():
             xd = line.get_xdata()
             yd = line.get_ydata()
+            line_label = line.get_label() if not line.get_label().startswith('_') else None
             # Skip axhline/axvline disguised as lines (length 2 with constant val)
             try:
                 if len(xd) == 2 and len(yd) == 2:
@@ -165,6 +166,7 @@ def extract_axes_data(fig):
                             'y': float(yd[0]),
                             'color': _color_to_rgba(line.get_color()),
                             'linestyle': line.get_linestyle(),
+                            'label': line_label,
                         })
                         continue
                     if xd[0] == xd[1] and yd[0] != yd[1]:
@@ -172,6 +174,7 @@ def extract_axes_data(fig):
                             'x': float(xd[0]),
                             'color': _color_to_rgba(line.get_color()),
                             'linestyle': line.get_linestyle(),
+                            'label': line_label,
                         })
                         continue
             except Exception:
@@ -180,7 +183,7 @@ def extract_axes_data(fig):
             ad['lines'].append({
                 'x': _to_jsonable(np.asarray(xd)),
                 'y': _to_jsonable(np.asarray(yd)),
-                'label': line.get_label() if not line.get_label().startswith('_') else None,
+                'label': line_label,
                 'color': _color_to_rgba(line.get_color()),
                 'linestyle': line.get_linestyle(),
                 'linewidth': float(line.get_linewidth()),
@@ -420,12 +423,19 @@ def render_overlay_comparison(items, save_path=None, title=None,
                       if not a.get('is_twin')]
             if ai_check >= len(s_axes):
                 continue
-            txts = s_axes[ai_check].get('texts', [])
-            for t in txts:
+            s_ax_check = s_axes[ai_check]
+            sample_n_lines = 0
+            for t in s_ax_check.get('texts', []):
                 txt_str = t.get('text', '').strip()
                 if txt_str:
-                    # 1 header line + content lines
-                    per_axis_total += 1 + len(txt_str.split('\n'))
+                    sample_n_lines += len(txt_str.split('\n'))
+            for ref_line in s_ax_check.get('axhlines', []) + s_ax_check.get('axvlines', []):
+                lbl = (ref_line.get('label') or '').strip()
+                if lbl and '=' in lbl:
+                    sample_n_lines += 1
+            if sample_n_lines > 0:
+                # +1 for sample header line
+                per_axis_total += 1 + sample_n_lines
         if per_axis_total > max_readout_lines:
             max_readout_lines = per_axis_total
 
@@ -577,7 +587,8 @@ def render_overlay_comparison(items, save_path=None, title=None,
         # figure-level legend at the bottom (added after the loop) to avoid
         # long sample names shrinking the plot area.
 
-        # Collect text annotations per axis to render below the plots later.
+        # Collect readouts per axis: from text annotations AND from
+        # axhline/axvline labels (e.g. EIS uses 'HFR = 0.05 Ω' as a vline label)
         per_sample_texts = []  # [(sample_label, [text strings])]
         for sample_idx, item in enumerate(items):
             s_label = item['label']
@@ -586,14 +597,17 @@ def render_overlay_comparison(items, save_path=None, title=None,
             if ai >= len(s_ax_list):
                 continue
             s_ax = s_ax_list[ai]
-            txts = s_ax.get('texts', [])
-            if not txts:
-                continue
             sample_lines = []
-            for t in txts:
+            # 1. Text box annotations (most common)
+            for t in s_ax.get('texts', []):
                 txt_str = t.get('text', '').strip()
                 if txt_str:
                     sample_lines.append(txt_str)
+            # 2. axhline/axvline labels containing '=' (e.g. HFR markers)
+            for ref_line in s_ax.get('axhlines', []) + s_ax.get('axvlines', []):
+                lbl = (ref_line.get('label') or '').strip()
+                if lbl and '=' in lbl:
+                    sample_lines.append(lbl)
             if sample_lines:
                 per_sample_texts.append((s_label, sample_lines))
 
