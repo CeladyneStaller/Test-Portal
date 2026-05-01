@@ -1177,13 +1177,7 @@
       <div class="opts">
         <label>
           Plot Title:
-          <input type="text" id="compareTitle" placeholder="Polcurve Comparison">
-        </label>
-        <label>
-          <input type="checkbox" id="compareShowRaw" checked> Show raw V vs j (solid lines)
-        </label>
-        <label>
-          <input type="checkbox" id="compareShowIrFree" checked> Show iR-free V vs j (dashed lines, if available)
+          <input type="text" id="compareTitle" placeholder="Plot Comparison">
         </label>
       </div>
       <div id="compareErr" style="display:none"></div>
@@ -2183,8 +2177,6 @@ async function submitComparison(groupingMode) {
   }
 
   const title = document.getElementById('compareTitle').value.trim();
-  const showRaw = document.getElementById('compareShowRaw').checked;
-  const showIrFree = document.getElementById('compareShowIrFree').checked;
 
   const btnAll = document.getElementById('compareGoBtnAll');
   const btnCond = document.getElementById('compareGoBtnConditions');
@@ -2195,8 +2187,8 @@ async function submitComparison(groupingMode) {
   fd.append('sources', JSON.stringify(sources));
   fd.append('title', title);
   fd.append('image_format', 'png');
-  fd.append('show_raw', showRaw ? 'true' : 'false');
-  fd.append('show_irfree', showIrFree ? 'true' : 'false');
+  fd.append('show_raw', 'true');
+  fd.append('show_irfree', 'true');
   fd.append('grouping_mode', groupingMode);
 
   try {
