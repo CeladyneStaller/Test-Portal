@@ -399,6 +399,42 @@ def render_overlay_comparison(items, save_path=None, title=None,
     figsize = [min(figsize[0], 5 * n_cols_eff + 2),
                min(figsize[1], 5 * n_rows_eff + 1)]
 
+    # Pre-scan items: count max readout lines per axis to size figure
+    # and pre-compute legend rows so we can grow the figure to accommodate
+    n_samples = len(items)
+    max_label_len = max(len(item['label']) for item in items)
+    if max_label_len > 30:
+        ncol = 1
+    elif max_label_len > 18:
+        ncol = min(2, n_samples)
+    else:
+        ncol = min(4, n_samples)
+    n_legend_rows = (n_samples + ncol - 1) // ncol
+
+    # Estimate max readout lines across all axes
+    max_readout_lines = 0
+    for ai_check, ad in enumerate(primary_axes):
+        per_axis_total = 0
+        for item in items:
+            s_axes = [a for a in item['sidecar'].get('data', {}).get('axes', [])
+                      if not a.get('is_twin')]
+            if ai_check >= len(s_axes):
+                continue
+            txts = s_axes[ai_check].get('texts', [])
+            for t in txts:
+                txt_str = t.get('text', '').strip()
+                if txt_str:
+                    # 1 header line + content lines
+                    per_axis_total += 1 + len(txt_str.split('\n'))
+        if per_axis_total > max_readout_lines:
+            max_readout_lines = per_axis_total
+
+    # Grow figure height to accommodate readouts + legend below the plots.
+    # Each readout line ≈ 0.10in at fontsize 7; each legend row ≈ 0.22in at fontsize 9.
+    extra_height = (max_readout_lines * 0.10 + n_legend_rows * 0.22
+                    + 0.3)  # padding
+    figsize = [figsize[0], figsize[1] + extra_height]
+
     fig, axes = plt.subplots(n_rows_eff, n_cols_eff, figsize=tuple(figsize),
                              squeeze=False)
 
@@ -541,16 +577,8 @@ def render_overlay_comparison(items, save_path=None, title=None,
         # figure-level legend at the bottom (added after the loop) to avoid
         # long sample names shrinking the plot area.
 
-        # Combined multi-sample readout box: collect text annotations
-        # from each sample for this axis position, build a single combined box.
+        # Collect text annotations per axis to render below the plots later.
         per_sample_texts = []  # [(sample_label, [text strings])]
-        # Use the box position from the reference sample (first sample's
-        # first text annotation for this axis), if any.
-        ref_x, ref_y = 0.03, 0.97
-        ref_ha, ref_va = 'left', 'top'
-        ref_fontsize = 8
-        any_text_found = False
-
         for sample_idx, item in enumerate(items):
             s_label = item['label']
             s_ax_list = [a for a in item['sidecar'].get('data', {}).get('axes', [])
@@ -561,44 +589,19 @@ def render_overlay_comparison(items, save_path=None, title=None,
             txts = s_ax.get('texts', [])
             if not txts:
                 continue
-            # Combine all text annotations on this axis into one block per sample
             sample_lines = []
             for t in txts:
                 txt_str = t.get('text', '').strip()
                 if txt_str:
                     sample_lines.append(txt_str)
-                    if not any_text_found:
-                        # Use first sample's first text box position as the anchor
-                        if t.get('in_axes_fraction'):
-                            ref_x = t.get('x', 0.03)
-                            ref_y = t.get('y', 0.97)
-                            ref_ha = t.get('ha', 'left')
-                            ref_va = t.get('va', 'top')
-                            ref_fontsize = t.get('fontsize', 8)
-                        any_text_found = True
             if sample_lines:
                 per_sample_texts.append((s_label, sample_lines))
 
+        # Stash per-axis readouts for rendering after layout is finalized
         if per_sample_texts:
-            # Build single compact text box: each sample as a header line
-            # with its readouts indented below.
-            combined_lines = []
-            for s_label, lines in per_sample_texts:
-                combined_lines.append(f'━ {s_label} ━')
-                for ln in lines:
-                    # Indent multi-line annotations
-                    for sub in ln.split('\n'):
-                        combined_lines.append(f'  {sub}')
-            combined_text = '\n'.join(combined_lines)
-            ax_target.text(
-                ref_x, ref_y, combined_text,
-                transform=ax_target.transAxes,
-                fontsize=max(7, ref_fontsize - 1),
-                ha=ref_ha, va=ref_va,
-                family='monospace',
-                bbox=dict(boxstyle='round,pad=0.4',
-                          fc='lightyellow', alpha=0.92, ec='#888'),
-            )
+            if not hasattr(fig, '_axis_readouts'):
+                fig._axis_readouts = {}
+            fig._axis_readouts[ai] = per_sample_texts
 
     if title:
         fig.suptitle(title, fontsize=13, fontweight='bold')
@@ -621,22 +624,66 @@ def render_overlay_comparison(items, save_path=None, title=None,
         ncol = min(2, n_samples)
     else:
         ncol = min(4, n_samples)
+    n_legend_rows = (n_samples + ncol - 1) // ncol
 
+    # Compute readout box height needs (approx 0.025 fig fraction per line, per axis)
+    readouts = getattr(fig, '_axis_readouts', {})
+    max_readout_lines = 0
+    if readouts:
+        for ai, per_sample_texts in readouts.items():
+            n_lines = sum(1 + sum(len(ln.split('\n')) for ln in lines)
+                          for _, lines in per_sample_texts)
+            if n_lines > max_readout_lines:
+                max_readout_lines = n_lines
+
+    plt.tight_layout()
+    # Reserve bottom space for x-labels + readouts + legend.
+    # Heights are in figure-fraction (0-1). Convert from inches:
+    #   1 figure fraction = figsize[1] inches
+    fig_h_in = figsize[1]
+    xlabel_in = 0.5  # x-label area
+    readout_in = max_readout_lines * 0.10 + (0.15 if max_readout_lines else 0)
+    legend_in = n_legend_rows * 0.22 + 0.10
+    bottom_margin = (xlabel_in + readout_in + legend_in + 0.15) / fig_h_in
+    bottom_margin = min(0.6, max(0.10, bottom_margin))
+    fig.subplots_adjust(bottom=bottom_margin)
+
+    # Render readouts below each axis. Position: below x-labels.
+    readout_top_y = bottom_margin - (xlabel_in / fig_h_in)
+    for ai, per_sample_texts in readouts.items():
+        if ai >= len(flat_axes):
+            continue
+        ax_target = flat_axes[ai]
+        bbox = ax_target.get_position()
+        ax_x_center = (bbox.x0 + bbox.x1) / 2
+
+        combined_lines = []
+        for s_label, lines in per_sample_texts:
+            combined_lines.append(f'━ {s_label} ━')
+            for ln in lines:
+                for sub in ln.split('\n'):
+                    combined_lines.append(f'  {sub}')
+        combined_text = '\n'.join(combined_lines)
+
+        fig.text(
+            ax_x_center, readout_top_y, combined_text,
+            ha='center', va='top',
+            fontsize=7,
+            family='monospace',
+            bbox=dict(boxstyle='round,pad=0.35',
+                      fc='lightyellow', alpha=0.92, ec='#888'),
+        )
+
+    # Place legend at the very bottom
     fig.legend(
         handles=legend_handles,
         loc='lower center',
         ncol=ncol,
         fontsize=9,
         framealpha=0.95,
-        bbox_to_anchor=(0.5, -0.02),
+        bbox_to_anchor=(0.5, 0.005),
         frameon=True,
     )
-
-    plt.tight_layout()
-    # Reserve space at the bottom for the legend (proportional to nrows of legend)
-    n_legend_rows = (n_samples + ncol - 1) // ncol
-    bottom_margin = 0.04 + 0.035 * n_legend_rows
-    fig.subplots_adjust(bottom=bottom_margin)
 
     if save_path:
         fig.savefig(save_path, bbox_inches='tight', dpi=150)
