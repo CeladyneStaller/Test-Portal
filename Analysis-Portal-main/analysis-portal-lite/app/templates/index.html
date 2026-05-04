@@ -529,6 +529,38 @@
     box-shadow: 0 8px 40px rgba(0,0,0,0.5);
   }
 
+  .lb-nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(0, 0, 0, 0.55);
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    color: white;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    font-size: 24px;
+    cursor: pointer;
+    z-index: 1010;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, border-color 0.15s, transform 0.15s;
+    user-select: none;
+    line-height: 1;
+    padding: 0;
+  }
+  .lb-nav:hover {
+    background: rgba(0, 0, 0, 0.85);
+    border-color: rgba(255, 255, 255, 0.9);
+    transform: translateY(-50%) scale(1.08);
+  }
+  .lb-nav:active {
+    transform: translateY(-50%) scale(0.95);
+  }
+  .lb-nav-prev { left: 16px; }
+  .lb-nav-next { right: 16px; }
+
   /* ── Compare feature ─────────────────────────── */
   .compare-fab {
     position: fixed;
@@ -1206,7 +1238,11 @@
         <button class="lb-close" onclick="closeLightbox()">&times;</button>
       </div>
     </div>
+    <button class="lb-nav lb-nav-prev" id="lb-prev"
+            onclick="lightboxPrev()" title="Previous (←)">&#10094;</button>
     <img id="lb-img" src="" alt="">
+    <button class="lb-nav lb-nav-next" id="lb-next"
+            onclick="lightboxNext()" title="Next (→)">&#10095;</button>
   </div>
 
 </div>
@@ -2226,30 +2262,94 @@ function pollJob(id) {
 }
 
 // ── Lightbox ────────────────────────────────────
-function openLightbox(url, name) {
-  const lb = document.getElementById('lightbox');
-  const img = document.getElementById('lb-img');
-  const title = document.getElementById('lb-title');
-  const dl = document.getElementById('lb-dl');
+// Gallery state: list of {url, name} objects for navigation
+let lightboxGallery = [];
+let lightboxIndex = -1;
 
-  img.src = url;
-  title.textContent = name;
-  dl.href = url;
-  dl.download = name;
+function _buildGallery() {
+  // Collect all currently-visible PNG view buttons in DOM order
+  const buttons = document.querySelectorAll('button.fg-view');
+  const items = [];
+  buttons.forEach(btn => {
+    // Parse the onclick handler to extract url + name (avoids re-rendering)
+    const onclick = btn.getAttribute('onclick') || '';
+    const m = onclick.match(/openLightbox\('([^']+)','([^']*)'\)/);
+    if (m) items.push({ url: m[1], name: m[2] });
+  });
+  return items;
+}
+
+function openLightbox(url, name) {
+  lightboxGallery = _buildGallery();
+  lightboxIndex = lightboxGallery.findIndex(it => it.url === url);
+  if (lightboxIndex < 0) {
+    // Fallback: just show this single item
+    lightboxGallery = [{ url, name }];
+    lightboxIndex = 0;
+  }
+  _showLightboxItem();
+
+  const lb = document.getElementById('lightbox');
   lb.classList.add('open');
   document.body.style.overflow = 'hidden';
 }
 
+function _showLightboxItem() {
+  const item = lightboxGallery[lightboxIndex];
+  if (!item) return;
+  const img = document.getElementById('lb-img');
+  const title = document.getElementById('lb-title');
+  const dl = document.getElementById('lb-dl');
+  img.src = item.url;
+  title.textContent = item.name + (lightboxGallery.length > 1
+    ? ` (${lightboxIndex + 1} / ${lightboxGallery.length})`
+    : '');
+  dl.href = item.url;
+  dl.download = item.name;
+
+  // Update prev/next button states
+  const prevBtn = document.getElementById('lb-prev');
+  const nextBtn = document.getElementById('lb-next');
+  if (prevBtn) prevBtn.style.visibility = lightboxGallery.length > 1 ? 'visible' : 'hidden';
+  if (nextBtn) nextBtn.style.visibility = lightboxGallery.length > 1 ? 'visible' : 'hidden';
+}
+
+function lightboxPrev() {
+  if (lightboxGallery.length < 2) return;
+  lightboxIndex = (lightboxIndex - 1 + lightboxGallery.length) % lightboxGallery.length;
+  _showLightboxItem();
+}
+
+function lightboxNext() {
+  if (lightboxGallery.length < 2) return;
+  lightboxIndex = (lightboxIndex + 1) % lightboxGallery.length;
+  _showLightboxItem();
+}
+
 function closeLightbox(e) {
-  if (e && e.target.tagName === 'IMG') return; // don't close when clicking the image
-  if (e && e.target.closest('.lb-controls')) return; // don't close when clicking controls
+  if (e && e.target.tagName === 'IMG') return;
+  if (e && e.target.closest('.lb-controls')) return;
+  if (e && e.target.closest('.lb-nav')) return;
   document.getElementById('lightbox').classList.remove('open');
   document.getElementById('lb-img').src = '';
   document.body.style.overflow = '';
+  lightboxGallery = [];
+  lightboxIndex = -1;
 }
 
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeLightbox();
+  const lb = document.getElementById('lightbox');
+  const isOpen = lb && lb.classList.contains('open');
+  if (!isOpen) return;
+  if (e.key === 'Escape') {
+    closeLightbox();
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    lightboxPrev();
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    lightboxNext();
+  }
 });
 </script>
 </body>
