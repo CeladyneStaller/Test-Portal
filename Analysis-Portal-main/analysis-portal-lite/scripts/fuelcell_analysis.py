@@ -33,6 +33,8 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
             membrane_thickness=None,
             stand=int(p.get('stand', 0)),
             ocv_interval_s=float(p.get('interval_s', 60.0)),
+            activation_interval_s=float(p.get('activation_interval_s',
+                                              p.get('interval_s', 60.0))),
             image_ext=image_ext)
 
     from pathlib import Path
@@ -93,10 +95,15 @@ ANALYSIS_TYPES = {
         'keywords': ['OCV', 'PURGE'],
         'label': 'OCV',
     },
+    'activation': {
+        'keywords': ['ACTIVATION', 'BREAKIN', 'BREAK-IN', 'BREAK_IN'],
+        'label': 'Activation',
+    },
 }
 
-# Classification priority (first match wins — OCV last since it's broadest)
-CLASSIFICATION_ORDER = ['ecsa', 'crossover', 'eis', 'polcurve', 'ocv']
+# Classification priority (first match wins — OCV last since it's broadest;
+# activation also placed early to claim files before OCV catches them)
+CLASSIFICATION_ORDER = ['ecsa', 'crossover', 'eis', 'activation', 'polcurve', 'ocv']
 
 
 def parse_fcd_header(filepath):
@@ -352,6 +359,22 @@ def run_ocv_batch(files, save_dir, interval_s=60.0, image_ext="png"):
 
     return run_batch(filepaths, labels, save_dir=save_dir,
                      interval_s=interval_s, image_ext=image_ext) or []
+
+
+def run_activation_batch(files, save_dir, interval_s=60.0, geo_area=5.0, image_ext="png"):
+    """Run activation/break-in analysis on classified files."""
+    try:
+        from scripts.activation_analysis import run_batch
+    except ImportError:
+        print('    ERROR: activation_analysis.py not found')
+        return []
+
+    filepaths = [f[0] for f in files]
+    labels = [f[1] for f in files]
+
+    return run_batch(filepaths, labels, save_dir=save_dir,
+                     interval_s=interval_s, geo_area=geo_area,
+                     image_ext=image_ext) or []
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -694,7 +717,7 @@ def save_consolidated_excel(results, filepath, geo_area=5.0):
 
 def run_all(folder, save_dir, geo_area=5.0, loading=0.2,
             membrane_thickness=None, stand=0, ocv_interval_s=60.0,
-            image_ext='png'):
+            activation_interval_s=60.0, image_ext='png'):
     """
     Scan folder, classify files, and run all applicable analyses.
     """
@@ -778,6 +801,10 @@ def run_all(folder, save_dir, geo_area=5.0, loading=0.2,
             elif atype == 'ocv':
                 all_results['ocv'] = run_ocv_batch(
                     files, sub_dir, interval_s=ocv_interval_s, image_ext=image_ext)
+            elif atype == 'activation':
+                all_results['activation'] = run_activation_batch(
+                    files, sub_dir, interval_s=activation_interval_s,
+                    geo_area=geo_area, image_ext=image_ext)
 
             # Check if the analysis actually produced output files
             from pathlib import Path
