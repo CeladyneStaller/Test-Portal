@@ -17,6 +17,7 @@ from scripts.electrolyzer_durability import run as elx_durability_run
 from scripts.fuelcell_analysis import run as fuelcell_run
 from scripts.ocv_analysis import run as ocv_run
 from scripts.activation_analysis import run as activation_run
+from scripts.compare_polcurves import run as plot_comparison_run
 
 SCRIPT_REGISTRY = {
     "Fuel Cell ECSA": ecsa_run,
@@ -28,6 +29,8 @@ SCRIPT_REGISTRY = {
     "Electrolyzer Pol Curve": elx_polcurve_run,
     "Electrolyzer Durability": elx_durability_run,
     "Fuel Cell Full Analysis": fuelcell_run,
+    # Internal-only — invoked via /api/compare, hidden from script dropdown
+    "Plot Comparison": plot_comparison_run,
 }
 
 # ─── Short labels for filename prefixing ─────────────────────────
@@ -41,6 +44,7 @@ SCRIPT_SHORT = {
     "Electrolyzer Pol Curve": "ElxPolCurve",
     "Electrolyzer Durability": "ElxDurability",
     "Fuel Cell Full Analysis": "FCAnalysis",
+    "Plot Comparison": "Comparison",
 }
 
 # ─── Common sample_name field (inserted first for every script) ──
