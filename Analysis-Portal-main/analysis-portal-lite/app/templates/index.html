@@ -2240,7 +2240,7 @@ async function submitComparison(groupingMode) {
     renderJob(d.job_id, {
       status: 'running',
       message: `Generating ${modeLabel} comparison from ${sources.length} plots...`,
-      script: 'Compare Polcurves',
+      script: 'Plot Comparison',
       input_files: sources.map(s => `${s.label} / ${s.filename}`),
       is_comparison: true,
     });
