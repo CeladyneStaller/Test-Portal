@@ -217,7 +217,7 @@ async def list_scripts():
     from scripts import SCRIPT_REGISTRY, SCRIPT_PARAMS
     # Internal scripts that should not appear in the user-facing dropdown.
     # These are invoked via dedicated endpoints (e.g. /api/compare) instead.
-    INTERNAL_ONLY = {"Compare Polcurves"}
+    INTERNAL_ONLY = {"Plot Comparison"}
     return {
         "scripts": [
             {
@@ -244,7 +244,7 @@ async def upload_and_run(
     if script not in SCRIPT_REGISTRY:
         raise HTTPException(400, f"Unknown script: {script}")
     # Block internal-only scripts from the upload endpoint
-    INTERNAL_ONLY = {"Compare Polcurves"}
+    INTERNAL_ONLY = {"Plot Comparison"}
     if script in INTERNAL_ONLY:
         raise HTTPException(400,
             f"'{script}' is invoked via the Compare Selected workflow, "
@@ -347,7 +347,7 @@ async def compare_jobs(
     if not sources_list or len(sources_list) < 2:
         raise HTTPException(400, "Need at least 2 plots to compare")
 
-    script = "Compare Polcurves"
+    script = "Plot Comparison"
 
     # Validate sources and resolve their output directories + sidecars
     with jobs_lock:
