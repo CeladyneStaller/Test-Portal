@@ -16,7 +16,7 @@ from scripts.electrolyzer_polcurve import run as elx_polcurve_run
 from scripts.electrolyzer_durability import run as elx_durability_run
 from scripts.fuelcell_analysis import run as fuelcell_run
 from scripts.ocv_analysis import run as ocv_run
-from scripts.compare_polcurves import run as compare_polcurves_run
+from scripts.activation_analysis import run as activation_run
 
 SCRIPT_REGISTRY = {
     "Fuel Cell ECSA": ecsa_run,
@@ -24,10 +24,10 @@ SCRIPT_REGISTRY = {
     "H2 Crossover": crossover_run,
     "FC Polarization Curve": polcurve_run,
     "OCV Analysis": ocv_run,
+    "FC Activation": activation_run,
     "Electrolyzer Pol Curve": elx_polcurve_run,
     "Electrolyzer Durability": elx_durability_run,
     "Fuel Cell Full Analysis": fuelcell_run,
-    "Compare Polcurves": compare_polcurves_run,
 }
 
 # ─── Short labels for filename prefixing ─────────────────────────
@@ -37,10 +37,10 @@ SCRIPT_SHORT = {
     "H2 Crossover": "H2Xover",
     "FC Polarization Curve": "PolCurve",
     "OCV Analysis": "OCV",
+    "FC Activation": "Activation",
     "Electrolyzer Pol Curve": "ElxPolCurve",
     "Electrolyzer Durability": "ElxDurability",
     "Fuel Cell Full Analysis": "FCAnalysis",
-    "Compare Polcurves": "Compare",
 }
 
 # ─── Common sample_name field (inserted first for every script) ──
@@ -71,9 +71,11 @@ SCRIPT_PARAMS = {
          "default": 0.08, "step": 0.01, "min": 0},
         {"key": "v_high", "label": "H_UPD Upper Bound (V vs RHE)", "type": "number",
          "default": 0.40, "step": 0.01, "min": 0},
-        {"key": "cycle", "label": "Cycle to Analyze", "type": "select", "default": "last",
-         "options": [{"value": "last", "label": "Last (most stable)"},
+        {"key": "cycle", "label": "Cycle to Analyze", "type": "select", "default": "2",
+         "options": [{"value": "2", "label": "Second"},
+                     {"value": "last", "label": "Last"},
                      {"value": "first", "label": "First"},
+                     {"value": "3", "label": "Third"},
                      {"value": "average", "label": "Average all"}]},
     ],
     "EIS Analysis": [
@@ -112,6 +114,14 @@ SCRIPT_PARAMS = {
     "OCV Analysis": [
         _SAMPLE_FIELD,
         _IMAGE_FORMAT_FIELD,
+        {"key": "interval_s", "label": "Resampling Interval (seconds)", "type": "number",
+         "default": 60.0, "step": 1, "min": 1},
+    ],
+    "FC Activation": [
+        _SAMPLE_FIELD,
+        _IMAGE_FORMAT_FIELD,
+        {"key": "geo_area", "label": "Geometric Area (cm²)", "type": "number",
+         "default": 5.0, "step": 0.1, "min": 0.1},
         {"key": "interval_s", "label": "Resampling Interval (seconds)", "type": "number",
          "default": 60.0, "step": 1, "min": 1},
     ],
