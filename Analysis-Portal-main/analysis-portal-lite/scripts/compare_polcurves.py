@@ -453,17 +453,23 @@ def _compare_generic(items, output_dir, params):
         cond = _parse_full_conditions(first_filename)
         subtitle = _format_conditions_subtitle(cond)
 
-    # Auto-generate clean labels per source unless the source dict
-    # explicitly carries a non-default user-edited label.
+    # Build per-row labels:
+    #   - If the source dict carries a non-empty 'label' (user typed an
+    #     override in the modal), use it verbatim.
+    #   - Otherwise auto-generate the clean default from
+    #     sample_name + filename + grouping_mode.
+    # This allows mixed rows: some manually labeled, others auto-defaulted.
     clean_items = []
     for it in items:
-        # Prefer explicit sample_name if the source dict carries one;
-        # otherwise fall back to the label as-provided.
-        sample_name = it.get('sample_name', '') or it.get('label', '').split('_')[0]
+        sample_name = it.get('sample_name', '') or ''
         filename = it.get('filename', '')
-        clean_label = _build_clean_label(sample_name, filename, grouping_mode)
+        user_label = (it.get('label') or '').strip()
+        if user_label:
+            label_to_use = user_label
+        else:
+            label_to_use = _build_clean_label(sample_name, filename, grouping_mode)
         clean_items.append({
-            'label': clean_label,
+            'label': label_to_use,
             'filename': filename,
             'sidecar': it['sidecar'],
             'sample_name': sample_name,
