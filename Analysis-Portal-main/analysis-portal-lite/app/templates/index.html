@@ -2300,7 +2300,12 @@ async function submitComparison(groupingMode) {
     if (!sel) return;
     const label = row.querySelector('input[type=text]').value.trim()
                   || `${sel.sample_name}_${sel.filename.split('/').pop().replace(/\.[^.]+$/, '')}`;
-    sources.push({ job_id: sel.job_id, label, filename: sel.filename });
+    sources.push({
+      job_id: sel.job_id,
+      label,
+      filename: sel.filename,
+      sample_name: sel.sample_name,
+    });
   });
 
   if (sources.length < 2) {
