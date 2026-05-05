@@ -261,41 +261,81 @@ def export_comparison_excel(items, plot_type, filepath):
 
 
 def _compare_generic(items, output_dir, params):
-    """Default generator: overlay + Excel."""
+    """Default generator: overlay + Excel. Writes outputs into a
+    subfolder named after the plot_type so the portal UI auto-groups them."""
     plot_type = items[0]['sidecar'].get('plot_type', 'plot')
     fname_suffix = params.get('_filename_suffix', '')
     title_suffix = params.get('_title_suffix', '')
     title = params.get('title') or f'{plot_type} Comparison{title_suffix}'
     image_format = params.get('image_format', 'png')
 
-    print(f"    {len(items)} samples:")
+    # Group outputs by plot_type into subfolders so the portal UI can
+    # display "Activation", "Polarization Curve", "EIS", etc. as separate
+    # buckets when a single comparison job spans multiple plot types.
+    subfolder = _plot_type_to_subfolder(plot_type)
+    sub_dir = os.path.join(output_dir, subfolder)
+    os.makedirs(sub_dir, exist_ok=True)
+
+    print(f"    {len(items)} samples (output → {subfolder}/):")
     for it in items:
         print(f"      - {it['label']}")
 
     out_files = []
 
     if image_format and image_format != 'none':
-        plot_path = os.path.join(output_dir,
+        plot_path = os.path.join(sub_dir,
                                  f'{plot_type}{fname_suffix}_comparison.{image_format}')
         try:
             fig = render_overlay_comparison(items, save_path=plot_path, title=title)
             if fig:
                 plt.close(fig)
-                out_files.append(os.path.basename(plot_path))
+                out_files.append(os.path.relpath(plot_path, output_dir))
         except Exception as e:
             print(f"    ✗ Failed to render comparison: {e}")
             import traceback; traceback.print_exc()
 
     try:
-        xlsx_path = os.path.join(output_dir,
+        xlsx_path = os.path.join(sub_dir,
                                  f'{plot_type}{fname_suffix}_comparison.xlsx')
         export_comparison_excel(items, plot_type, xlsx_path)
-        out_files.append(os.path.basename(xlsx_path))
+        out_files.append(os.path.relpath(xlsx_path, output_dir))
     except Exception as e:
         print(f"    ✗ Failed to export Excel: {e}")
         import traceback; traceback.print_exc()
 
     return out_files
+
+
+def _plot_type_to_subfolder(plot_type):
+    """Map a sidecar plot_type to an output subfolder name.
+
+    Different plot_types from the same characterization share a folder so
+    the portal UI buckets them together. E.g., 'eis', 'eis_fit',
+    'nyquist', 'nyquist_overlay' all live in 'eis/'.
+    """
+    pt = (plot_type or 'plot').lower()
+    # Explicit mapping for known characterization buckets
+    if pt.startswith('activation'):
+        return 'activation'
+    if pt.startswith('crossover') or 'h2x' in pt:
+        return 'crossover'
+    if pt.startswith('eis') or pt.startswith('nyquist'):
+        return 'eis'
+    if pt.startswith('ecsa'):
+        return 'ecsa'
+    if pt.startswith('ocv'):
+        return 'ocv'
+    if pt.startswith('polcurve'):
+        return 'polcurve'
+    if pt.startswith('durability'):
+        return 'durability'
+    if pt.startswith('clr') or pt.startswith('coth'):
+        return 'CLR'
+    if pt in ('losses_vs_cycle', 'j_vs_cycle', 'model_fit', 'ir_correction'):
+        return 'polcurve'
+    # Fallback: use the plot_type itself as the folder name (sanitized)
+    safe = ''.join(c if c.isalnum() or c in '-_' else '_' for c in pt)
+    return safe or 'other'
 
 
 COMPARISON_GENERATORS = {
@@ -403,7 +443,10 @@ def run(input_dir, output_dir, params=None):
             "same type were selected and their sidecars are valid."
         )
 
-    output_files = [f.name for f in out.iterdir() if f.is_file()]
+    # Collect all output files (recursively, since each plot type now goes
+    # into its own subfolder for the portal UI grouping).
+    output_files = [str(f.relative_to(out)) for f in out.rglob('*')
+                    if f.is_file() and '_plot_data' not in f.parts]
     return {
         'status': 'success',
         'files_produced': output_files,
