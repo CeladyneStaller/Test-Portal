@@ -108,6 +108,8 @@ def _run_job(job_id: str, script_name: str, input_dir: str, output_dir: str,
         'polcurve': 'Polarization Curve',
         'ocv': 'OCV',
         'durability': 'Durability',
+        'activation': 'Activation',
+        'CLR': 'Catalyst Layer Resistance',
     }
 
     grouped = {}
