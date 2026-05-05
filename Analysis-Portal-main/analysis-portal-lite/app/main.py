@@ -356,7 +356,13 @@ async def compare_jobs(
         validated_sources = []
         for src in sources_list:
             jid = src.get('job_id')
-            label = src.get('label', jid)
+            # Preserve empty string vs missing key — empty means "use script's
+            # auto-generated clean default" while a non-empty value is the
+            # user's explicit override.
+            label = src.get('label', '')
+            if label is None:
+                label = ''
+            label = str(label).strip()
             filename = src.get('filename', '')
             if not filename:
                 raise HTTPException(400, f"Source missing filename: {src}")
@@ -395,7 +401,7 @@ async def compare_jobs(
                     f"was run before sidecar support was added.")
             validated_sources.append({
                 'job_id': jid,
-                'label': label or jid,
+                'label': label,  # may be '' — script will then auto-generate
                 'filename': filename,
                 'output_dir': str(output_dir),
                 'sample_name': src.get('sample_name', '') or jid,
