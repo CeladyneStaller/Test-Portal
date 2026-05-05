@@ -284,7 +284,7 @@ def _compare_generic(items, output_dir, params):
 
     if image_format and image_format != 'none':
         plot_path = os.path.join(sub_dir,
-                                 f'{plot_type}{fname_suffix}_comparison.{image_format}')
+                                 f'{plot_type}{fname_suffix}.{image_format}')
         try:
             fig = render_overlay_comparison(items, save_path=plot_path, title=title)
             if fig:
@@ -296,7 +296,7 @@ def _compare_generic(items, output_dir, params):
 
     try:
         xlsx_path = os.path.join(sub_dir,
-                                 f'{plot_type}{fname_suffix}_comparison.xlsx')
+                                 f'{plot_type}{fname_suffix}.xlsx')
         export_comparison_excel(items, plot_type, xlsx_path)
         out_files.append(os.path.relpath(xlsx_path, output_dir))
     except Exception as e:
