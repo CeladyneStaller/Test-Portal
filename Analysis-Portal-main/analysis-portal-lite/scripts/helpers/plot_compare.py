@@ -356,12 +356,14 @@ def load_sidecar(sidecar_path):
 
 
 def render_overlay_comparison(items, save_path=None, title=None,
-                               sample_label_in_legend=True):
+                               subtitle=None, sample_label_in_legend=True):
     """
     Generic comparison renderer that overlays N samples' axis data on a
     same-shape figure.
 
     items : list of {'label': str, 'sidecar': dict}
+    title : str — main figure title (rendered as suptitle)
+    subtitle : str | None — optional secondary title (smaller, below main)
     """
     if not items:
         return None
@@ -439,11 +441,13 @@ def render_overlay_comparison(items, save_path=None, title=None,
         if per_axis_total > max_readout_lines:
             max_readout_lines = per_axis_total
 
-    # Grow figure height to accommodate readouts + legend below the plots.
-    # Each readout line ≈ 0.10in at fontsize 7; each legend row ≈ 0.22in at fontsize 9.
-    extra_height = (max_readout_lines * 0.10 + n_legend_rows * 0.22
-                    + 0.3)  # padding
-    figsize = [figsize[0], figsize[1] + extra_height]
+    # Grow figure height to accommodate title/subtitle above + readouts + legend below.
+    # Title ~ 0.35in, subtitle ~ 0.25in (when present).
+    title_in = 0.35 if title else 0
+    subtitle_in = 0.25 if subtitle else 0
+    top_extra = title_in + subtitle_in + (0.10 if (title or subtitle) else 0)
+    bottom_extra = (max_readout_lines * 0.10 + n_legend_rows * 0.22 + 0.3)
+    figsize = [figsize[0], figsize[1] + top_extra + bottom_extra]
 
     fig, axes = plt.subplots(n_rows_eff, n_cols_eff, figsize=tuple(figsize),
                              squeeze=False)
@@ -617,8 +621,8 @@ def render_overlay_comparison(items, save_path=None, title=None,
                 fig._axis_readouts = {}
             fig._axis_readouts[ai] = per_sample_texts
 
-    if title:
-        fig.suptitle(title, fontsize=13, fontweight='bold')
+    # (Title and subtitle are rendered later via fig.text after layout
+    # is finalized, so they can be precisely positioned without overlapping.)
 
     # Figure-level legend at the bottom: one entry per sample with its color.
     # Single legend keeps long sample names from shrinking the plot area.
@@ -660,7 +664,27 @@ def render_overlay_comparison(items, save_path=None, title=None,
     legend_in = n_legend_rows * 0.22 + 0.10
     bottom_margin = (xlabel_in + readout_in + legend_in + 0.15) / fig_h_in
     bottom_margin = min(0.6, max(0.10, bottom_margin))
-    fig.subplots_adjust(bottom=bottom_margin)
+
+    # Reserve top margin for title + subtitle so they don't overlap chart area.
+    title_in = 0.35 if title else 0
+    subtitle_in = 0.30 if subtitle else 0
+    top_padding_in = 0.10 if (title or subtitle) else 0
+    top_margin_used = (title_in + subtitle_in + top_padding_in) / fig_h_in
+    top_margin = max(0.05, min(0.25, top_margin_used))
+    fig.subplots_adjust(bottom=bottom_margin, top=1.0 - top_margin)
+
+    # Render title + optional subtitle as fig.text (more position control than suptitle).
+    # Top of title at y=0.99, descending downwards.
+    if title:
+        title_y = 1.0 - (title_in * 0.5) / fig_h_in
+        fig.text(0.5, title_y, title,
+                 ha='center', va='center',
+                 fontsize=14, fontweight='bold')
+    if subtitle:
+        subtitle_y = 1.0 - (title_in + subtitle_in * 0.5) / fig_h_in
+        fig.text(0.5, subtitle_y, subtitle,
+                 ha='center', va='center',
+                 fontsize=11, color='#444', style='italic')
 
     # Render readouts below each axis. Position: below x-labels.
     readout_top_y = bottom_margin - (xlabel_in / fig_h_in)
