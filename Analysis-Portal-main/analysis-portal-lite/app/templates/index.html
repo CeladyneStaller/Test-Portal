@@ -607,10 +607,18 @@
   .lb-viewport.dragging img { transition: none; }
 
   /* ── Compare feature ─────────────────────────── */
-  .compare-fab {
+  .compare-fab-group {
     position: fixed;
     bottom: 24px;
     right: 24px;
+    z-index: 100;
+    display: none;
+    gap: 8px;
+    align-items: center;
+  }
+  .compare-fab-group.visible { display: flex; }
+
+  .compare-fab {
     background: #1F4E79;
     color: white;
     padding: 14px 20px;
@@ -621,15 +629,12 @@
     font-size: 14px;
     border: none;
     transition: all 0.15s;
-    z-index: 100;
-    display: none;
   }
   .compare-fab:hover {
     background: #2E75B6;
     transform: translateY(-2px);
     box-shadow: 0 6px 20px rgba(0,0,0,0.3);
   }
-  .compare-fab.visible { display: block; }
   .compare-fab .count {
     background: white;
     color: #1F4E79;
@@ -637,6 +642,24 @@
     padding: 2px 8px;
     margin-left: 6px;
     font-size: 12px;
+  }
+
+  .compare-fab-clear {
+    background: rgba(255, 255, 255, 0.95);
+    color: #c33;
+    border: 1px solid #c33;
+    padding: 10px 14px;
+    border-radius: 20px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 13px;
+    transition: all 0.15s;
+  }
+  .compare-fab-clear:hover {
+    background: #c33;
+    color: white;
+    transform: translateY(-2px);
   }
 
   .compare-modal {
@@ -1240,9 +1263,15 @@
   </div>
 
   <!-- ─── Compare Selected (FAB + Modal) ──────── -->
-  <button class="compare-fab" id="compareFab" onclick="openCompareModal()">
-    Compare Selected <span class="count" id="compareCount">0</span>
-  </button>
+  <div class="compare-fab-group" id="compareFabGroup">
+    <button class="compare-fab-clear" id="compareFabClear"
+            onclick="clearAllCompareSelections()" title="Clear all selections">
+      Clear
+    </button>
+    <button class="compare-fab" id="compareFab" onclick="openCompareModal()">
+      Compare Selected <span class="count" id="compareCount">0</span>
+    </button>
+  </div>
 
   <div class="compare-modal" id="compareModal" onclick="closeCompareModalBg(event)">
     <div class="compare-modal-inner">
@@ -2168,14 +2197,32 @@ function batchSelectGroup(jobId, filenames) {
 }
 
 function updateCompareFab() {
-  const fab = document.getElementById('compareFab');
+  const fabGroup = document.getElementById('compareFabGroup');
   const count = document.getElementById('compareCount');
   count.textContent = compareSelections.size;
-  if (compareSelections.size >= 2) {
-    fab.classList.add('visible');
+  if (compareSelections.size >= 1) {
+    // Show clear button as soon as there's anything to clear,
+    // and the compare button when there are at least 2.
+    fabGroup.classList.add('visible');
   } else {
-    fab.classList.remove('visible');
+    fabGroup.classList.remove('visible');
   }
+  // Hide the Compare Selected button itself when only 1 is selected
+  // (Clear remains visible)
+  const fab = document.getElementById('compareFab');
+  if (fab) fab.style.display = (compareSelections.size >= 2) ? 'block' : 'none';
+}
+
+function clearAllCompareSelections() {
+  if (compareSelections.size === 0) return;
+  // Clear state
+  compareSelections.clear();
+  // Visually deselect every compare button on the page
+  document.querySelectorAll('button.fg-cmp.on').forEach(btn => {
+    btn.classList.remove('on');
+    btn.innerHTML = '☐ Compare';
+  });
+  updateCompareFab();
 }
 
 function openCompareModal() {
