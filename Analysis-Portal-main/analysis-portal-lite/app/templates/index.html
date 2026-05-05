@@ -2236,24 +2236,26 @@ function openCompareModal() {
     const row = document.createElement('div');
     row.className = 'sample-row';
     row.dataset.key = key;
-    // Derive plot_type from filename:
-    // 1. Strip subfolder path (polcurve/foo.png → foo.png)
-    // 2. Strip extension
-    // 3. Strip "{sample_name}-{script_short}-" prefix added by main.py
+    // Build a helpful placeholder showing what the auto-generated clean
+    // label would look like (sample_name_step). The input itself starts
+    // empty so the script's clean defaults are used unless the user types
+    // an override.
     let stem = s.filename.split('/').pop().replace(/\.[^.]+$/, '');
-    // Try to strip the sample_name prefix
     if (s.sample_name && stem.toLowerCase().startsWith(s.sample_name.toLowerCase() + '-')) {
       stem = stem.substring(s.sample_name.length + 1);
-      // Strip the next dash-segment (script short name like "ElxPolCurve")
       const dashIdx = stem.indexOf('-');
       if (dashIdx > 0 && dashIdx < 25) {
         stem = stem.substring(dashIdx + 1);
       }
     }
-    const defaultLabel = `${s.sample_name}_${stem}`;
+    // Try to extract a step indicator (cell letter+digits like b14, c10)
+    // for a more readable placeholder hint.
+    const stepMatch = stem.match(/(?:^|_)([A-Za-z]\d+)(?:_|$)/);
+    const stepHint = stepMatch ? `_${stepMatch[1]}` : '';
+    const placeholder = `auto: ${s.sample_name}${stepHint}…  (leave blank for clean default)`;
     row.innerHTML = `
       <span class="job-name">${esc(s.filename)}<br><span style="color:#bbb">${esc(s.job_id)}</span></span>
-      <input type="text" value="${esc(defaultLabel)}" placeholder="Comparison label">
+      <input type="text" value="" placeholder="${esc(placeholder)}">
       <button class="remove-btn" onclick="removeCompareSample('${esc(key)}')">Remove</button>
     `;
     wrap.appendChild(row);
@@ -2298,11 +2300,13 @@ async function submitComparison(groupingMode) {
     const key = row.dataset.key;
     const sel = compareSelections.get(key);
     if (!sel) return;
-    const label = row.querySelector('input[type=text]').value.trim()
-                  || `${sel.sample_name}_${sel.filename.split('/').pop().replace(/\.[^.]+$/, '')}`;
+    // Send the user's typed label as-is. If blank, the script will
+    // auto-generate the clean default ({sample}_{step}_{conditions} for
+    // "All Together" or {sample}_{step} for "Same Conditions").
+    const userLabel = row.querySelector('input[type=text]').value.trim();
     sources.push({
       job_id: sel.job_id,
-      label,
+      label: userLabel,
       filename: sel.filename,
       sample_name: sel.sample_name,
     });
