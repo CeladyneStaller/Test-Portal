@@ -521,14 +521,6 @@
 
   .lb-close:hover { color: #fff; }
 
-  .lightbox img {
-    max-width: 92vw;
-    max-height: 85vh;
-    object-fit: contain;
-    border-radius: 4px;
-    box-shadow: 0 8px 40px rgba(0,0,0,0.5);
-  }
-
   .lb-nav {
     position: absolute;
     top: 50%;
@@ -560,6 +552,59 @@
   }
   .lb-nav-prev { left: 16px; }
   .lb-nav-next { right: 16px; }
+
+  .lb-zoom {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: rgba(255, 255, 255, 0.85);
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0;
+    transition: all 0.15s;
+  }
+  .lb-zoom:hover {
+    background: rgba(255, 255, 255, 0.18);
+    color: white;
+    border-color: rgba(255, 255, 255, 0.6);
+  }
+  .lb-zoom-pct {
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 12px;
+    font-family: monospace;
+    min-width: 44px;
+    text-align: center;
+    user-select: none;
+  }
+
+  .lb-viewport {
+    width: 92vw;
+    height: 85vh;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: grab;
+  }
+  .lb-viewport.zoomed { cursor: grab; }
+  .lb-viewport.dragging { cursor: grabbing; }
+  .lb-viewport img {
+    max-width: 92vw;
+    max-height: 85vh;
+    object-fit: contain;
+    border-radius: 4px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+    transform-origin: center center;
+    transition: transform 0.05s ease-out;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+  /* When dragging, disable transition for smooth movement */
+  .lb-viewport.dragging img { transition: none; }
 
   /* ── Compare feature ─────────────────────────── */
   .compare-fab {
@@ -1234,13 +1279,19 @@
     <div class="lb-controls">
       <span class="lb-title" id="lb-title"></span>
       <div class="lb-buttons">
+        <button class="lb-zoom" onclick="lightboxZoom(-1)" title="Zoom out (−)">&minus;</button>
+        <span class="lb-zoom-pct" id="lb-zoom-pct">100%</span>
+        <button class="lb-zoom" onclick="lightboxZoom(1)" title="Zoom in (+)">+</button>
+        <button class="lb-zoom" onclick="lightboxZoomReset()" title="Reset zoom (0)">&#9633;</button>
         <a class="lb-dl" id="lb-dl" download>&#8615; Download</a>
         <button class="lb-close" onclick="closeLightbox()">&times;</button>
       </div>
     </div>
     <button class="lb-nav lb-nav-prev" id="lb-prev"
             onclick="lightboxPrev()" title="Previous (←)">&#10094;</button>
-    <img id="lb-img" src="" alt="">
+    <div class="lb-viewport" id="lb-viewport">
+      <img id="lb-img" src="" alt="" draggable="false">
+    </div>
     <button class="lb-nav lb-nav-next" id="lb-next"
             onclick="lightboxNext()" title="Next (→)">&#10095;</button>
   </div>
@@ -2266,12 +2317,18 @@ function pollJob(id) {
 let lightboxGallery = [];
 let lightboxIndex = -1;
 
+// Zoom state
+let zoomScale = 1.0;
+let zoomX = 0;
+let zoomY = 0;
+const ZOOM_MIN = 1.0;
+const ZOOM_MAX = 8.0;
+const ZOOM_STEP = 1.25;  // multiplicative step for buttons
+
 function _buildGallery() {
-  // Collect all currently-visible PNG view buttons in DOM order
   const buttons = document.querySelectorAll('button.fg-view');
   const items = [];
   buttons.forEach(btn => {
-    // Parse the onclick handler to extract url + name (avoids re-rendering)
     const onclick = btn.getAttribute('onclick') || '';
     const m = onclick.match(/openLightbox\('([^']+)','([^']*)'\)/);
     if (m) items.push({ url: m[1], name: m[2] });
@@ -2283,10 +2340,10 @@ function openLightbox(url, name) {
   lightboxGallery = _buildGallery();
   lightboxIndex = lightboxGallery.findIndex(it => it.url === url);
   if (lightboxIndex < 0) {
-    // Fallback: just show this single item
     lightboxGallery = [{ url, name }];
     lightboxIndex = 0;
   }
+  _resetZoom();
   _showLightboxItem();
 
   const lb = document.getElementById('lightbox');
@@ -2307,11 +2364,89 @@ function _showLightboxItem() {
   dl.href = item.url;
   dl.download = item.name;
 
-  // Update prev/next button states
   const prevBtn = document.getElementById('lb-prev');
   const nextBtn = document.getElementById('lb-next');
   if (prevBtn) prevBtn.style.visibility = lightboxGallery.length > 1 ? 'visible' : 'hidden';
   if (nextBtn) nextBtn.style.visibility = lightboxGallery.length > 1 ? 'visible' : 'hidden';
+
+  _resetZoom();
+}
+
+function _resetZoom() {
+  zoomScale = 1.0;
+  zoomX = 0;
+  zoomY = 0;
+  _applyZoom();
+}
+
+function _applyZoom() {
+  const img = document.getElementById('lb-img');
+  const viewport = document.getElementById('lb-viewport');
+  if (!img || !viewport) return;
+  img.style.transform = `translate(${zoomX}px, ${zoomY}px) scale(${zoomScale})`;
+  const pct = document.getElementById('lb-zoom-pct');
+  if (pct) pct.textContent = `${Math.round(zoomScale * 100)}%`;
+  if (zoomScale > 1.001) viewport.classList.add('zoomed');
+  else viewport.classList.remove('zoomed');
+}
+
+function _clampOffsets() {
+  // Keep the zoomed image from drifting too far off-screen.
+  // Allow panning up to the natural overflow on each axis.
+  const img = document.getElementById('lb-img');
+  const viewport = document.getElementById('lb-viewport');
+  if (!img || !viewport) return;
+  const vw = viewport.clientWidth;
+  const vh = viewport.clientHeight;
+  const iw = img.clientWidth * zoomScale;
+  const ih = img.clientHeight * zoomScale;
+  const maxX = Math.max(0, (iw - vw) / 2);
+  const maxY = Math.max(0, (ih - vh) / 2);
+  zoomX = Math.max(-maxX, Math.min(maxX, zoomX));
+  zoomY = Math.max(-maxY, Math.min(maxY, zoomY));
+}
+
+function _setZoom(newScale, cursorX, cursorY) {
+  // cursorX/Y in viewport coords (0,0 = top-left); if undefined, zoom around center
+  newScale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, newScale));
+  if (Math.abs(newScale - zoomScale) < 0.001) return;
+
+  if (cursorX !== undefined && cursorY !== undefined) {
+    // Zoom around the cursor position so the point under cursor stays fixed.
+    const viewport = document.getElementById('lb-viewport');
+    const rect = viewport.getBoundingClientRect();
+    const cx = cursorX - rect.left - rect.width / 2;
+    const cy = cursorY - rect.top - rect.height / 2;
+    // (cx, cy) is cursor position relative to viewport center.
+    // Image coord under cursor BEFORE zoom: (cx - zoomX) / zoomScale
+    // We want that same image coord under cursor AFTER zoom:
+    //   newCx == newImgCoord * newScale + newZoomX
+    //   newImgCoord == (cx - zoomX) / zoomScale
+    //   Set newCx = cx → solve for newZoomX
+    const imgCoordX = (cx - zoomX) / zoomScale;
+    const imgCoordY = (cy - zoomY) / zoomScale;
+    zoomX = cx - imgCoordX * newScale;
+    zoomY = cy - imgCoordY * newScale;
+  }
+
+  zoomScale = newScale;
+  if (zoomScale <= 1.001) {
+    zoomX = 0;
+    zoomY = 0;
+  } else {
+    _clampOffsets();
+  }
+  _applyZoom();
+}
+
+function lightboxZoom(direction) {
+  // direction: +1 = zoom in, -1 = zoom out
+  const factor = direction > 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+  _setZoom(zoomScale * factor);
+}
+
+function lightboxZoomReset() {
+  _resetZoom();
 }
 
 function lightboxPrev() {
@@ -2330,11 +2465,13 @@ function closeLightbox(e) {
   if (e && e.target.tagName === 'IMG') return;
   if (e && e.target.closest('.lb-controls')) return;
   if (e && e.target.closest('.lb-nav')) return;
+  if (e && e.target.closest('.lb-viewport') && zoomScale > 1.001) return;
   document.getElementById('lightbox').classList.remove('open');
   document.getElementById('lb-img').src = '';
   document.body.style.overflow = '';
   lightboxGallery = [];
   lightboxIndex = -1;
+  _resetZoom();
 }
 
 document.addEventListener('keydown', e => {
@@ -2349,8 +2486,72 @@ document.addEventListener('keydown', e => {
   } else if (e.key === 'ArrowRight') {
     e.preventDefault();
     lightboxNext();
+  } else if (e.key === '+' || e.key === '=') {
+    e.preventDefault();
+    lightboxZoom(1);
+  } else if (e.key === '-' || e.key === '_') {
+    e.preventDefault();
+    lightboxZoom(-1);
+  } else if (e.key === '0') {
+    e.preventDefault();
+    lightboxZoomReset();
   }
 });
+
+// Scroll wheel zoom on the viewport
+(function setupZoomEvents() {
+  // Defer until DOM is ready
+  function init() {
+    const viewport = document.getElementById('lb-viewport');
+    if (!viewport) return;
+
+    // Wheel zoom
+    viewport.addEventListener('wheel', e => {
+      const lb = document.getElementById('lightbox');
+      if (!lb || !lb.classList.contains('open')) return;
+      e.preventDefault();
+      const direction = e.deltaY < 0 ? 1 : -1;
+      const factor = direction > 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+      _setZoom(zoomScale * factor, e.clientX, e.clientY);
+    }, { passive: false });
+
+    // Drag to pan when zoomed
+    let isDragging = false;
+    let dragStartX = 0, dragStartY = 0;
+    let dragStartZoomX = 0, dragStartZoomY = 0;
+
+    viewport.addEventListener('mousedown', e => {
+      if (zoomScale <= 1.001) return;
+      isDragging = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      dragStartZoomX = zoomX;
+      dragStartZoomY = zoomY;
+      viewport.classList.add('dragging');
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', e => {
+      if (!isDragging) return;
+      zoomX = dragStartZoomX + (e.clientX - dragStartX);
+      zoomY = dragStartZoomY + (e.clientY - dragStartY);
+      _clampOffsets();
+      _applyZoom();
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (!isDragging) return;
+      isDragging = false;
+      viewport.classList.remove('dragging');
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
 </script>
 </body>
 </html>
