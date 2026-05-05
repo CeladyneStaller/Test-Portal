@@ -398,6 +398,7 @@ async def compare_jobs(
                 'label': label or jid,
                 'filename': filename,
                 'output_dir': str(output_dir),
+                'sample_name': src.get('sample_name', '') or jid,
             })
 
     # Create new job for the comparison
