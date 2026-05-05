@@ -407,13 +407,48 @@ async def compare_jobs(
     input_dir.mkdir(parents=True)
     output_dir.mkdir(parents=True)
 
+    # Build sample_name for filename prefixing:
+    #   - If user provided a title, use that (sanitized)
+    #   - Otherwise, join the distinct source sample names with '_'
+    title_clean = title.strip()
+    if title_clean:
+        # Sanitize for filename: keep alphanumerics, dashes, underscores, spaces
+        safe_chars = []
+        for ch in title_clean:
+            if ch.isalnum() or ch in '-_ ':
+                safe_chars.append(ch)
+        comparison_sample_name = ''.join(safe_chars).strip()[:80]
+        if not comparison_sample_name:
+            comparison_sample_name = 'Comparison'
+    else:
+        # Join distinct source sample names. Look up each source job's
+        # sample_name from the jobs registry so we get the original
+        # sample identifier rather than the per-PNG label.
+        with jobs_lock:
+            seen = []
+            for src in validated_sources:
+                jid = src['job_id']
+                src_job = jobs.get(jid, {})
+                src_sample = src_job.get('sample_name') or jid
+                if src_sample not in seen:
+                    seen.append(src_sample)
+        # Sanitize each, then join with underscore
+        sanitized = []
+        for s in seen:
+            safe = ''.join(c for c in s if c.isalnum() or c in '-_')
+            if safe:
+                sanitized.append(safe)
+        comparison_sample_name = '_'.join(sanitized) if sanitized else 'Comparison'
+        if len(comparison_sample_name) > 80:
+            comparison_sample_name = comparison_sample_name[:77] + '...'
+
     user_params = {
         'sources': _json.dumps(validated_sources),
         'show_raw': show_raw,
         'show_irfree': show_irfree,
         'image_format': image_format,
         'title': title or f"Comparison ({len(validated_sources)} plots)",
-        'sample_name': 'Comparison',
+        'sample_name': comparison_sample_name,
         'grouping_mode': grouping_mode,
     }
 
