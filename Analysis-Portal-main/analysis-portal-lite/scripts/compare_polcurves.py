@@ -82,6 +82,172 @@ def _parse_condition_signature(filename):
     return '_'.join(parts) if parts else ''
 
 
+def _parse_full_conditions(filename):
+    """Extract all parseable conditions from a filename.
+
+    Returns dict with possible keys:
+      step (e.g. 'b14'), T (numeric), RH (numeric),
+      P_value (numeric), P_unit (str like 'kPa'),
+      H2 (numeric), Air, N2, O2, V (numeric), V_unit
+    """
+    import re
+    if not filename:
+        return {}
+
+    name = os.path.splitext(os.path.basename(filename))[0]
+
+    def parse_num(s):
+        try:
+            return float(s.replace('o', '.'))
+        except (ValueError, TypeError):
+            return None
+
+    cond = {}
+
+    # Step (cell letter + digits, e.g. b14, c6)
+    m = re.search(r'(?<![A-Za-z])([A-Za-z])(\d+)(?![A-Za-z])', name)
+    if m:
+        cond['step'] = m.group(0).lower()
+
+    # Temperature
+    m = re.search(r'(\d+(?:o\d+)?)C(?![A-Za-z])', name)
+    if m:
+        v = parse_num(m.group(1))
+        if v is not None:
+            cond['T'] = v
+
+    # Relative humidity
+    m = re.search(r'(\d+(?:o\d+)?)RH', name, re.IGNORECASE)
+    if m:
+        v = parse_num(m.group(1))
+        if v is not None:
+            cond['RH'] = v
+
+    # Pressure
+    m = re.search(r'(\d+(?:o\d+)?)\s*(kPa|barg|psi|bar)', name, re.IGNORECASE)
+    if m:
+        v = parse_num(m.group(1))
+        if v is not None:
+            cond['P_value'] = v
+            cond['P_unit'] = m.group(2)
+
+    # Gas flows
+    for key, pat in (('H2', r'(\d+(?:o\d+)?)H2(?![A-Za-z])'),
+                      ('Air', r'(\d+(?:o\d+)?)Air'),
+                      ('N2', r'(\d+(?:o\d+)?)N2(?![A-Za-z])'),
+                      ('O2', r'(\d+(?:o\d+)?)O2(?![A-Za-z])')):
+        m = re.search(pat, name, re.IGNORECASE)
+        if m:
+            v = parse_num(m.group(1))
+            if v is not None:
+                cond[key] = v
+
+    # Voltage setpoint (digits followed by V, not preceded by alpha,
+    # not part of a unit like 'kV')
+    m = re.search(r'(?<![A-Za-z])(\d+(?:o\d+)?)V(?![A-Za-z])', name)
+    if m:
+        v = parse_num(m.group(1))
+        if v is not None:
+            cond['V'] = v
+
+    return cond
+
+
+def _format_conditions_subtitle(cond):
+    """Format conditions dict as a human-readable subtitle.
+
+    Example: '80°C | 100% RH | H₂: 0.2 / Air: 0.2 slpm | 0kPa'
+    """
+    parts = []
+    if 'T' in cond:
+        parts.append(f"{cond['T']:g}°C")
+    if 'RH' in cond:
+        parts.append(f"{cond['RH']:g}% RH")
+
+    gas_parts = []
+    if 'H2' in cond:
+        gas_parts.append(f"H₂: {cond['H2']:g}")
+    if 'Air' in cond:
+        gas_parts.append(f"Air: {cond['Air']:g}")
+    if 'N2' in cond:
+        gas_parts.append(f"N₂: {cond['N2']:g}")
+    if 'O2' in cond:
+        gas_parts.append(f"O₂: {cond['O2']:g}")
+    if gas_parts:
+        parts.append(' / '.join(gas_parts) + ' slpm')
+
+    if 'P_value' in cond:
+        parts.append(f"{cond['P_value']:g} {cond['P_unit']}")
+
+    return ' | '.join(parts)
+
+
+def _friendly_plot_type(plot_type):
+    """Map sidecar plot_type to a human-readable name for plot titles."""
+    mapping = {
+        'polcurve': 'Polarization Curve',
+        'polcurve_overlay': 'Polarization Curve Overlay',
+        'eis': 'EIS',
+        'eis_fit': 'EIS Fit',
+        'eis_for_ir': 'EIS (for iR Correction)',
+        'nyquist': 'Nyquist',
+        'nyquist_overlay': 'Nyquist Overlay',
+        'crossover': 'H₂ Crossover',
+        'activation': 'Activation',
+        'activation_sequential': 'Activation (Sequential)',
+        'ecsa_hupd': 'ECSA (HUPD)',
+        'ecsa_co': 'ECSA (CO Stripping)',
+        'ecsa_degradation': 'ECSA Degradation',
+        'ecsa_overlay': 'ECSA Overlay',
+        'ocv': 'OCV',
+        'ocv_overlay': 'OCV Overlay',
+        'losses_vs_cycle': 'Losses vs Cycle',
+        'j_vs_cycle': 'Current Density vs Cycle',
+        'model_fit': 'Model Fit',
+        'ir_correction': 'iR Correction',
+        'CLR_analysis': 'Catalyst Layer Resistance',
+        'CLR_model_fit': 'CLR Model Fit',
+        'durability_voltage': 'Durability — Voltage vs Time',
+        'durability_hfr': 'Durability — HFR vs Time',
+        'durability_degradation': 'Durability — Degradation Rate',
+        'durability_polcurve_evolution': 'Durability — Polcurve Evolution',
+        'durability_asr_evolution': 'Durability — ASR Evolution',
+        'durability_loss_evolution': 'Durability — Loss Evolution',
+    }
+    return mapping.get(plot_type, plot_type.replace('_', ' ').title())
+
+
+def _build_clean_label(sample_name, filename, grouping_mode):
+    """Build a minimal-info legend label.
+
+    grouping_mode 'plot_type' (All Together):
+        {sample_name}_{step}_{T}C_{RH}RH_{P}{P_unit}
+    grouping_mode 'plot_type_conditions' (Same Conditions):
+        {sample_name}_{step}
+    """
+    if not sample_name:
+        sample_name = 'sample'
+    cond = _parse_full_conditions(filename)
+    step = cond.get('step', '')
+
+    parts = [sample_name]
+    if step:
+        parts.append(step)
+
+    if grouping_mode != 'plot_type_conditions':
+        cond_parts = []
+        if 'T' in cond:
+            cond_parts.append(f"{cond['T']:g}C")
+        if 'RH' in cond:
+            cond_parts.append(f"{cond['RH']:g}RH")
+        if 'P_value' in cond:
+            cond_parts.append(f"{cond['P_value']:g}{cond['P_unit']}")
+        if cond_parts:
+            parts.append('_'.join(cond_parts))
+
+    return '_'.join(parts)
+
+
 def _parse_metrics_from_text(text_str):
     """Parse 'KEY = VALUE' style readouts into a dict.
 
@@ -265,9 +431,43 @@ def _compare_generic(items, output_dir, params):
     subfolder named after the plot_type so the portal UI auto-groups them."""
     plot_type = items[0]['sidecar'].get('plot_type', 'plot')
     fname_suffix = params.get('_filename_suffix', '')
-    title_suffix = params.get('_title_suffix', '')
-    title = params.get('title') or f'{plot_type} Comparison{title_suffix}'
+    grouping_mode = params.get('grouping_mode', 'plot_type')
     image_format = params.get('image_format', 'png')
+
+    # Build friendly title (e.g. 'Polarization Curve Comparison').
+    # If user provided a custom title in the modal, prefer that.
+    user_title = params.get('title', '').strip()
+    friendly = _friendly_plot_type(plot_type)
+    if user_title and not user_title.startswith('Comparison ('):
+        # User typed something custom — use it as-is (no friendly mapping)
+        title = user_title
+    else:
+        title = f'{friendly} Comparison'
+
+    # Subtitle: only for "Same Conditions" mode — describes the shared
+    # conditions of the group. Parsed from the first item's filename
+    # (all items in the group share the same condition signature).
+    subtitle = None
+    if grouping_mode == 'plot_type_conditions':
+        first_filename = items[0].get('filename', '')
+        cond = _parse_full_conditions(first_filename)
+        subtitle = _format_conditions_subtitle(cond)
+
+    # Auto-generate clean labels per source unless the source dict
+    # explicitly carries a non-default user-edited label.
+    clean_items = []
+    for it in items:
+        # Prefer explicit sample_name if the source dict carries one;
+        # otherwise fall back to the label as-provided.
+        sample_name = it.get('sample_name', '') or it.get('label', '').split('_')[0]
+        filename = it.get('filename', '')
+        clean_label = _build_clean_label(sample_name, filename, grouping_mode)
+        clean_items.append({
+            'label': clean_label,
+            'filename': filename,
+            'sidecar': it['sidecar'],
+            'sample_name': sample_name,
+        })
 
     # Group outputs by plot_type into subfolders so the portal UI can
     # display "Activation", "Polarization Curve", "EIS", etc. as separate
@@ -276,9 +476,11 @@ def _compare_generic(items, output_dir, params):
     sub_dir = os.path.join(output_dir, subfolder)
     os.makedirs(sub_dir, exist_ok=True)
 
-    print(f"    {len(items)} samples (output → {subfolder}/):")
-    for it in items:
+    print(f"    {len(clean_items)} samples (output → {subfolder}/):")
+    for it in clean_items:
         print(f"      - {it['label']}")
+    if subtitle:
+        print(f"    Subtitle: {subtitle}")
 
     out_files = []
 
@@ -286,7 +488,8 @@ def _compare_generic(items, output_dir, params):
         plot_path = os.path.join(sub_dir,
                                  f'{plot_type}{fname_suffix}.{image_format}')
         try:
-            fig = render_overlay_comparison(items, save_path=plot_path, title=title)
+            fig = render_overlay_comparison(clean_items, save_path=plot_path,
+                                             title=title, subtitle=subtitle)
             if fig:
                 plt.close(fig)
                 out_files.append(os.path.relpath(plot_path, output_dir))
@@ -297,7 +500,7 @@ def _compare_generic(items, output_dir, params):
     try:
         xlsx_path = os.path.join(sub_dir,
                                  f'{plot_type}{fname_suffix}.xlsx')
-        export_comparison_excel(items, plot_type, xlsx_path)
+        export_comparison_excel(clean_items, plot_type, xlsx_path)
         out_files.append(os.path.relpath(xlsx_path, output_dir))
     except Exception as e:
         print(f"    ✗ Failed to export Excel: {e}")
@@ -402,6 +605,7 @@ def run(input_dir, output_dir, params=None):
             'label': label,
             'filename': filename,
             'sidecar': sidecar,
+            'sample_name': src.get('sample_name', ''),
         })
 
     if not by_group:
