@@ -274,9 +274,11 @@
   .job-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 8px;
     margin-bottom: 6px;
   }
+  .job-row .job-id { flex: 1; min-width: 0; }
+  .job-row .sample-cmp-btn { margin-left: 0; }
 
   .job-id {
     font-family: var(--mono);
@@ -793,9 +795,51 @@
   .group-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 8px;
     margin-bottom: 6px;
   }
+  .group-header.collapsible {
+    cursor: pointer;
+    user-select: none;
+    padding: 4px 6px;
+    border-radius: 4px;
+    transition: background 0.12s;
+  }
+  .group-header.collapsible:hover {
+    background: rgba(31, 78, 121, 0.06);
+  }
+  /* Push the download button to the far right */
+  .group-header .dl-all { margin-left: auto; }
+  .group-header .batch-cmp-btn { margin-left: auto; }
+  .group-header .batch-cmp-btn ~ .dl-all { margin-left: 0; }
+
+  .group-count {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+  }
+
+  .caret {
+    display: inline-block;
+    font-size: 11px;
+    color: var(--text-dim);
+    width: 12px;
+    text-align: center;
+    user-select: none;
+  }
+  .job-caret { font-size: 13px; }
+
+  .job-row.collapsible {
+    cursor: pointer;
+    user-select: none;
+  }
+  .job-row.collapsible:hover .job-id {
+    color: var(--accent);
+  }
+
+  .job-body { transition: max-height 0.18s ease-out; }
+  .job-body.collapsed { display: none; }
+  .dl-row.collapsed { display: none; }
 
   .group-label {
     font-size: 11px;
@@ -1333,6 +1377,38 @@ let files = [];
 let polling = {};
 let scriptDefs = {};  // name → {description, params}
 const compareSelections = new Map(); // jobId → {label, script}
+
+// Cache of last-known job data, keyed by job ID. Used so collapse toggles
+// can re-render without needing a fresh poll fetch.
+const jobs = new Map();
+
+// Collapse/expand state for results panels.
+// collapsedJobs: Set of job IDs whose body is collapsed.
+// collapsedGroups: Set of "{jobId}::{groupLabel}" whose file row is collapsed.
+const collapsedJobs = new Set();
+const collapsedGroups = new Set();
+
+function toggleJob(jobId) {
+  if (collapsedJobs.has(jobId)) {
+    collapsedJobs.delete(jobId);
+  } else {
+    collapsedJobs.add(jobId);
+  }
+  // Re-render this job from the cached data (jobs Map keeps last data)
+  const d = jobs.get(jobId);
+  if (d) renderJob(jobId, d);
+}
+
+function toggleGroup(jobId, label) {
+  const key = `${jobId}::${label}`;
+  if (collapsedGroups.has(key)) {
+    collapsedGroups.delete(key);
+  } else {
+    collapsedGroups.add(key);
+  }
+  const d = jobs.get(jobId);
+  if (d) renderJob(jobId, d);
+}
 
 // ── Load scripts ────────────────────────────────
 (async () => {
@@ -2032,6 +2108,9 @@ function renderFileLink(jobId, f) {
 }
 
 function renderJob(id, d) {
+  // Cache for re-render on collapse toggle
+  jobs.set(id, d);
+
   const c = document.getElementById('jlist');
   const em = c.querySelector('.empty');
   if (em) em.remove();
@@ -2061,17 +2140,23 @@ function renderJob(id, d) {
       );
       const batchBtn = (comparablePngs.length > 0 && d.status === 'complete')
         ? `<button class="batch-cmp-btn"
-                   onclick="batchSelectGroup('${esc(id)}', ${JSON.stringify(comparablePngs).replace(/"/g, '&quot;')})"
+                   onclick="event.stopPropagation(); batchSelectGroup('${esc(id)}', ${JSON.stringify(comparablePngs).replace(/"/g, '&quot;')})"
                    title="Select all plots in this group for comparison">📊 Compare All</button>`
         : '';
-      const header = `<div class="group-header">
+      const groupKey = `${id}::${label}`;
+      const isCollapsed = collapsedGroups.has(groupKey);
+      const fileCount = filesInGroup.filter(f => !f.includes('_plot_data')).length;
+      const countSpan = `<span class="group-count">(${fileCount})</span>`;
+      const header = `<div class="group-header collapsible" onclick="toggleGroup('${esc(id)}', ${JSON.stringify(label).replace(/"/g, '&quot;')})">
+        <span class="caret">${isCollapsed ? '▸' : '▾'}</span>
         <span class="group-label">${esc(label)}</span>
+        ${countSpan}
         ${batchBtn}
-        <a class="dl-all" href="/api/download-zip/${id}?group=${encodeURIComponent(label)}" download title="Download all as ZIP">&#8615; Download All</a>
+        <a class="dl-all" href="/api/download-zip/${id}?group=${encodeURIComponent(label)}" download
+           onclick="event.stopPropagation()" title="Download all as ZIP">&#8615; Download All</a>
       </div>`;
-      const links = '<div class="dl-row">' + filesInGroup.map(f => {
-        return renderFileLink(id, f);
-      }).join('') + '</div>';
+      const links = `<div class="dl-row${isCollapsed ? ' collapsed' : ''}">` +
+                    filesInGroup.map(f => renderFileLink(id, f)).join('') + '</div>';
       return `<div class="result-group">${header}${links}</div>`;
     }).join('');
   } else if (d.output_files && d.output_files.length) {
@@ -2105,20 +2190,35 @@ function renderJob(id, d) {
     );
     if (comparablePngs.length > 0) {
       sampleBatchBtn = `<button class="sample-cmp-btn"
-                                onclick="batchSelectGroup('${esc(id)}', ${JSON.stringify(comparablePngs).replace(/"/g, '&quot;')})"
+                                onclick="event.stopPropagation(); batchSelectGroup('${esc(id)}', ${JSON.stringify(comparablePngs).replace(/"/g, '&quot;')})"
                                 title="Select all plots from this sample for comparison">📊 Compare All Plots</button>`;
     }
   }
 
+  // Sample-level collapse: only enabled when complete (no point hiding
+  // a running job's progress messages).
+  const canCollapse = d.status === 'complete';
+  const isCollapsed = canCollapse && collapsedJobs.has(id);
+  const headerCaret = canCollapse
+    ? `<span class="caret job-caret">${isCollapsed ? '▸' : '▾'}</span>`
+    : '';
+  const headerOnclick = canCollapse
+    ? `onclick="toggleJob('${esc(id)}')"`
+    : '';
+  const headerClass = canCollapse ? 'job-row collapsible' : 'job-row';
+
   el.innerHTML = `
-    <div class="job-row">
+    <div class="${headerClass}" ${headerOnclick}>
+      ${headerCaret}
       <span class="job-id">${sampleLabel}${scriptLabel}${esc(id)}</span>
       <span class="tag ${tagCls}">${d.status}</span>
       ${sampleBatchBtn}
     </div>
-    ${active ? '<div class="bar-track"><div class="bar-fill"></div></div>' : ''}
-    <div class="job-msg">${esc(d.message || '')}</div>
-    ${dlAllHtml}${dlHtml}${errHtml}
+    <div class="job-body${isCollapsed ? ' collapsed' : ''}">
+      ${active ? '<div class="bar-track"><div class="bar-fill"></div></div>' : ''}
+      <div class="job-msg">${esc(d.message || '')}</div>
+      ${dlAllHtml}${dlHtml}${errHtml}
+    </div>
   `;
 
   document.getElementById('jc').textContent = c.querySelectorAll('.job').length;
