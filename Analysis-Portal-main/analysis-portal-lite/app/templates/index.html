@@ -705,8 +705,30 @@
     max-width: 600px;
     width: 100%;
     max-height: 90vh;
-    overflow-y: auto;
     box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  /* The sample list is the only scrollable part — header/actions stay pinned */
+  .compare-modal-inner #compareSamples {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    min-height: 0;
+    padding-right: 4px;
+  }
+  /* Headers/buttons/divider don't shrink */
+  .compare-modal-inner h2,
+  .compare-modal-inner > p,
+  .compare-modal-inner .opts,
+  .compare-modal-inner #compareErr,
+  .compare-modal-inner .compare-modal-actions,
+  .compare-modal-inner .compare-modal-divider {
+    flex: 0 0 auto;
+  }
+  .compare-modal-divider {
+    border-top: 1px solid #e0e0e0;
+    margin: 16px 0 8px 0;
   }
   .compare-modal h2 {
     margin: 0 0 16px 0;
@@ -1351,7 +1373,6 @@
       <p style="margin: 0 0 12px 0; font-size: 13px; color: #555;">
         Selected plots will be auto-grouped by type. Edit labels below.
       </p>
-      <div id="compareSamples"></div>
       <div class="opts">
         <label>
           Plot Title:
@@ -1359,7 +1380,7 @@
         </label>
       </div>
       <div id="compareErr" style="display:none"></div>
-      <div class="actions" style="flex-wrap: wrap; gap: 8px;">
+      <div class="actions compare-modal-actions" style="flex-wrap: wrap; gap: 8px;">
         <button class="btn btn-secondary" onclick="closeCompareModal()">Cancel</button>
         <button class="btn btn-primary" id="compareGoBtnAll"
                 onclick="submitComparison('plot_type')"
@@ -1372,6 +1393,8 @@
           Compare Same Conditions
         </button>
       </div>
+      <div class="compare-modal-divider"></div>
+      <div id="compareSamples"></div>
     </div>
   </div>
 
