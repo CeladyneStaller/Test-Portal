@@ -98,7 +98,30 @@
     border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 10px;
+  }
+  /* Push controls to the right of the section title */
+  .section-head .count { margin-left: auto; }
+  .section-head .count + button { margin-left: 0; }
+
+  .collapse-all-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    transition: all 0.12s;
+    font-family: var(--font);
+  }
+  .collapse-all-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(31, 78, 121, 0.06);
   }
 
   .section-head .count {
@@ -1300,6 +1323,11 @@
     <div class="section-head">
       Jobs
       <span class="count" id="jc">0</span>
+      <button class="collapse-all-btn" id="collapseAllBtn"
+              onclick="toggleCollapseAllJobs()"
+              title="Collapse or expand all completed jobs to sample-level view">
+        Collapse All
+      </button>
     </div>
     <div id="jlist">
       <div class="empty">No jobs yet</div>
@@ -1397,6 +1425,7 @@ function toggleJob(jobId) {
   // Re-render this job from the cached data (jobs Map keeps last data)
   const d = jobs.get(jobId);
   if (d) renderJob(jobId, d);
+  _updateCollapseAllBtn();
 }
 
 function toggleGroup(jobId, label) {
@@ -1408,6 +1437,50 @@ function toggleGroup(jobId, label) {
   }
   const d = jobs.get(jobId);
   if (d) renderJob(jobId, d);
+}
+
+function toggleCollapseAllJobs() {
+  // Collect all completed jobs (only those can be collapsed). If any are
+  // currently expanded, collapse them all. Otherwise expand them all.
+  const completed = [];
+  jobs.forEach((d, id) => {
+    if (d.status === 'complete') completed.push(id);
+  });
+  if (completed.length === 0) return;
+  const anyExpanded = completed.some(id => !collapsedJobs.has(id));
+  if (anyExpanded) {
+    completed.forEach(id => collapsedJobs.add(id));
+  } else {
+    completed.forEach(id => collapsedJobs.delete(id));
+  }
+  // Re-render all affected jobs
+  completed.forEach(id => {
+    const d = jobs.get(id);
+    if (d) renderJob(id, d);
+  });
+  _updateCollapseAllBtn();
+}
+
+function _updateCollapseAllBtn() {
+  // Toggle button label between "Collapse All" and "Expand All" based on
+  // current state of completed jobs.
+  const btn = document.getElementById('collapseAllBtn');
+  if (!btn) return;
+  let completedCount = 0;
+  let collapsedCount = 0;
+  jobs.forEach((d, id) => {
+    if (d.status === 'complete') {
+      completedCount += 1;
+      if (collapsedJobs.has(id)) collapsedCount += 1;
+    }
+  });
+  if (completedCount === 0) {
+    btn.style.display = 'none';
+    return;
+  }
+  btn.style.display = '';
+  // If all completed jobs are collapsed, offer Expand All; else Collapse All
+  btn.textContent = (collapsedCount === completedCount) ? 'Expand All' : 'Collapse All';
 }
 
 // ── Load scripts ────────────────────────────────
@@ -2222,6 +2295,7 @@ function renderJob(id, d) {
   `;
 
   document.getElementById('jc').textContent = c.querySelectorAll('.job').length;
+  _updateCollapseAllBtn();
 }
 
 // ── Compare feature ────────────────────────────
