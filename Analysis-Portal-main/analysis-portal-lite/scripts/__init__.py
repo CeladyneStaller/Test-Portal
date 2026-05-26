@@ -17,6 +17,7 @@ from scripts.electrolyzer_durability import run as elx_durability_run
 from scripts.fuelcell_analysis import run as fuelcell_run
 from scripts.ocv_analysis import run as ocv_run
 from scripts.activation_analysis import run as activation_run
+from scripts.electrode_cleaning_analysis import run as cleaning_run
 from scripts.compare_polcurves import run as plot_comparison_run
 
 SCRIPT_REGISTRY = {
@@ -26,6 +27,7 @@ SCRIPT_REGISTRY = {
     "FC Polarization Curve": polcurve_run,
     "OCV Analysis": ocv_run,
     "FC Activation": activation_run,
+    "FC Electrode Cleaning": cleaning_run,
     "Electrolyzer Pol Curve": elx_polcurve_run,
     "Electrolyzer Durability": elx_durability_run,
     "Fuel Cell Full Analysis": fuelcell_run,
@@ -41,6 +43,7 @@ SCRIPT_SHORT = {
     "FC Polarization Curve": "PolCurve",
     "OCV Analysis": "OCV",
     "FC Activation": "Activation",
+    "FC Electrode Cleaning": "Cleaning",
     "Electrolyzer Pol Curve": "ElxPolCurve",
     "Electrolyzer Durability": "ElxDurability",
     "Fuel Cell Full Analysis": "FCAnalysis",
@@ -128,6 +131,22 @@ SCRIPT_PARAMS = {
          "default": 5.0, "step": 0.1, "min": 0.1},
         {"key": "interval_s", "label": "Resampling Interval (seconds)", "type": "number",
          "default": 60.0, "step": 1, "min": 1},
+    ],
+    "FC Electrode Cleaning": [
+        _SAMPLE_FIELD,
+        _IMAGE_FORMAT_FIELD,
+        {"key": "geo_area", "label": "Geometric Area (cm²)", "type": "number",
+         "default": 5.0, "step": 0.1, "min": 0.1},
+        {"key": "scan_rate", "label": "Scan Rate (V/s)", "type": "number",
+         "default": 0.5, "step": 0.05, "min": 0.001},
+        {"key": "v_hupd_low", "label": "H_UPD low (V)", "type": "number",
+         "default": 0.05, "step": 0.01, "min": 0},
+        {"key": "v_hupd_high", "label": "H_UPD high (V)", "type": "number",
+         "default": 0.40, "step": 0.01, "min": 0},
+        {"key": "v_dl_low", "label": "DL low (V)", "type": "number",
+         "default": 0.40, "step": 0.01, "min": 0},
+        {"key": "v_dl_high", "label": "DL high (V)", "type": "number",
+         "default": 0.50, "step": 0.01, "min": 0},
     ],
     "Electrolyzer Pol Curve": [
         _SAMPLE_FIELD,

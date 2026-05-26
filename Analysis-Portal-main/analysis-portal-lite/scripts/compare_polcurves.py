@@ -213,6 +213,8 @@ def _friendly_plot_type(plot_type):
         'durability_polcurve_evolution': 'Durability — Polcurve Evolution',
         'durability_asr_evolution': 'Durability — ASR Evolution',
         'durability_loss_evolution': 'Durability — Loss Evolution',
+        'cleaning_cycles': 'Electrode Cleaning Cycles',
+        'cleaning_diagnostics': 'Cleaning Diagnostics',
     }
     return mapping.get(plot_type, plot_type.replace('_', ' ').title())
 
@@ -526,6 +528,8 @@ def _plot_type_to_subfolder(plot_type):
     # Explicit mapping for known characterization buckets
     if pt.startswith('activation'):
         return 'activation'
+    if pt.startswith('cleaning'):
+        return 'cleaning'
     if pt.startswith('crossover') or 'h2x' in pt:
         return 'crossover'
     if pt.startswith('eis') or pt.startswith('nyquist'):

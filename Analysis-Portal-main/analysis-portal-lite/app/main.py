@@ -109,6 +109,7 @@ def _run_job(job_id: str, script_name: str, input_dir: str, output_dir: str,
         'ocv': 'OCV',
         'durability': 'Durability',
         'activation': 'Activation',
+        'cleaning': 'Electrode Cleaning',
         'CLR': 'Catalyst Layer Resistance',
     }
 
