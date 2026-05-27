@@ -227,6 +227,11 @@ def _request(url: str, method: str = 'GET',
     headers = {
         'Content-Type': 'application/json',
         'X-Master-Key': api_key,
+        # Set a real-looking User-Agent — Cloudflare blocks the default
+        # Python-urllib UA with error 1010 (bot detection).
+        'User-Agent': 'Mozilla/5.0 (compatible; AnalysisPortal/1.0; +https://anthropic.com/claude)',
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9',
     }
     data = None
     if body is not None:
