@@ -19,6 +19,7 @@ from scripts.ocv_analysis import run as ocv_run
 from scripts.activation_analysis import run as activation_run
 from scripts.electrode_cleaning_analysis import run as cleaning_run
 from scripts.polcurve_analysis_down import run as polcurve_down_run
+from scripts.polcurve_analysis_hfr_compare import run as polcurve_hfrcompare_run
 from scripts.compare_polcurves import run as plot_comparison_run
 
 SCRIPT_REGISTRY = {
@@ -27,6 +28,7 @@ SCRIPT_REGISTRY = {
     "H2 Crossover": crossover_run,
     "FC Polarization Curve": polcurve_run,
     "FC Polarization Curve (Downswing)": polcurve_down_run,
+    "FC Polarization Curve (HFR Compare)": polcurve_hfrcompare_run,
     "OCV Analysis": ocv_run,
     "FC Activation": activation_run,
     "FC Electrode Cleaning": cleaning_run,
@@ -44,6 +46,7 @@ SCRIPT_SHORT = {
     "H2 Crossover": "H2Xover",
     "FC Polarization Curve": "PolCurve",
     "FC Polarization Curve (Downswing)": "PolCurveDown",
+    "FC Polarization Curve (HFR Compare)": "PolCurveHFRcmp",
     "OCV Analysis": "OCV",
     "FC Activation": "Activation",
     "FC Electrode Cleaning": "Cleaning",
@@ -122,6 +125,16 @@ SCRIPT_PARAMS = {
          "default": 0.10, "step": 0.001, "min": 0},
     ],
     "FC Polarization Curve (Downswing)": [
+        _SAMPLE_FIELD,
+        _IMAGE_FORMAT_FIELD,
+        {"key": "geo_area", "label": "Geometric Area (cm²)", "type": "number",
+         "default": 5.0, "step": 0.1, "min": 0.1},
+        {"key": "tafel_j_min", "label": "Tafel Region j_min (A/cm²)", "type": "number",
+         "default": 0.01, "step": 0.001, "min": 0},
+        {"key": "tafel_j_max", "label": "Tafel Region j_max (A/cm²)", "type": "number",
+         "default": 0.10, "step": 0.001, "min": 0},
+    ],
+    "FC Polarization Curve (HFR Compare)": [
         _SAMPLE_FIELD,
         _IMAGE_FORMAT_FIELD,
         {"key": "geo_area", "label": "Geometric Area (cm²)", "type": "number",

@@ -189,6 +189,8 @@ def _friendly_plot_type(plot_type):
         'polcurve_overlay': 'Polarization Curve Overlay',
         'polcurve_down': 'Polarization Curve (Downswing)',
         'polcurve_down_overlay': 'Polarization Curve Overlay (Downswing)',
+        'polcurve_hfrcompare': 'Polarization Curve (HFR Comparison)',
+        'polcurve_hfrcompare_overlay': 'Polarization Curve Overlay (HFR Comparison)',
         'eis': 'EIS',
         'eis_fit': 'EIS Fit',
         'eis_for_ir': 'EIS (for iR Correction)',
