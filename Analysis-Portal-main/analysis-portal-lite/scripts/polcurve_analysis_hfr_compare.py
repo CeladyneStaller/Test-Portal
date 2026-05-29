@@ -1466,8 +1466,10 @@ def attach_ci_hfr(results, geo_area=5.0):
 
     # mΩ → Ω
     ci_ohm = ci_mohm * 0.001
-    # Filter outliers the same way the EIS HFR is filtered
-    ci_ohm, n_out, _ = filter_hfr_outliers(ci_ohm, geo_area=geo_area)
+    # Filter outliers the same way the EIS HFR is filtered.
+    # ASR ceiling raised to 5 Ω·cm² (current-interrupt can legitimately
+    # report higher series resistance than EIS HFR).
+    ci_ohm, n_out, _ = filter_hfr_outliers(ci_ohm, geo_area=geo_area, max_asr=5.0)
 
     ci_asr = ci_ohm * geo_area  # Ω·cm²
     results['CI_HFR'] = ci_ohm
@@ -2274,9 +2276,9 @@ def run_batch(filepaths, labels, geo_area,
             j_dwell, V_dwell, HFR_dwell, cond_dwell = extract_dwell_endpoints(
                 j_raw, V_raw, HFR_raw, cond_raw, v_step=v_step)
 
-            # Filter HFR outliers
+            # Filter HFR outliers (ASR ceiling raised to 5 Ω·cm²)
             if HFR_dwell is not None:
-                HFR_dwell, n_out, _ = filter_hfr_outliers(HFR_dwell, geo_area=geo_area)
+                HFR_dwell, n_out, _ = filter_hfr_outliers(HFR_dwell, geo_area=geo_area, max_asr=5.0)
                 if n_out > 0:
                     print(f'         HFR: {n_out} outlier(s) replaced')
 
@@ -2427,4 +2429,3 @@ def run_batch(filepaths, labels, geo_area,
     print(f'  {"═" * 85}\n')
 
     return all_results
-
