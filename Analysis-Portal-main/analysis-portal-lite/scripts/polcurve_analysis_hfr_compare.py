@@ -428,7 +428,7 @@ def extract_dwell_endpoints(j_raw, V_raw, HFR_raw=None, conditions_raw=None,
             stable_n = 1
 
         # Take last 20 points of stable window
-        n_tail = min(20, stable_n)
+        n_tail = min(50, stable_n)
         tail_start = end - n_tail
         tail_sl = slice(tail_start, end)
 
