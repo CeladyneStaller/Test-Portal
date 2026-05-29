@@ -428,7 +428,7 @@ def extract_dwell_endpoints(j_raw, V_raw, HFR_raw=None, conditions_raw=None,
             stable_n = 1
 
         # Take last 20 points of stable window
-        n_tail = min(50, stable_n)
+        n_tail = min(20, stable_n)
         tail_start = end - n_tail
         tail_sl = slice(tail_start, end)
 
@@ -1442,6 +1442,11 @@ def attach_ci_hfr(results, geo_area=5.0):
       'CI_HFR_mean'   — mean ASR (Ω·cm²)
       'V_irfree_CI'   — iR-free voltage using current-interrupt R
       'P_irfree_CI'   — iR-free power density using current-interrupt R
+      'AVG_HFR'       — per-cell mean of EIS HFR and CI in Ω
+      'AVG_HFR_ASR'   — averaged ASR in Ω·cm²
+      'AVG_HFR_mean'  — mean averaged ASR (Ω·cm²)
+      'V_irfree_AVG'  — iR-free voltage using the averaged R
+      'P_irfree_AVG'  — iR-free power density using the averaged R
     Silently does nothing if the column isn't present.
     """
     results.setdefault('CI_HFR', None)
@@ -1480,6 +1485,28 @@ def attach_ci_hfr(results, geo_area=5.0):
     results['V_irfree_CI'] = V_irfree_ci
     results['P_irfree_CI'] = j * V_irfree_ci
 
+    # ── Averaged HFR (mean of EIS HFR and current-interrupt) ──
+    # Only computed when the EIS HFR series is present and aligned with
+    # the CI series. Averaging is done on the per-cell Ω values; the
+    # iR-correction then uses the averaged ASR.
+    results.setdefault('AVG_HFR', None)
+    results.setdefault('AVG_HFR_ASR', None)
+    results.setdefault('AVG_HFR_mean', None)
+    results.setdefault('V_irfree_AVG', None)
+    results.setdefault('P_irfree_AVG', None)
+
+    eis_ohm = results.get('HFR')
+    if eis_ohm is not None and len(eis_ohm) == len(ci_ohm):
+        avg_ohm = (np.asarray(eis_ohm, dtype=float) + ci_ohm) / 2.0
+        avg_asr = avg_ohm * geo_area
+        results['AVG_HFR'] = avg_ohm
+        results['AVG_HFR_ASR'] = avg_asr
+        results['AVG_HFR_mean'] = float(np.mean(avg_asr))
+
+        V_irfree_avg = compute_ir_free_voltage(V, j, avg_asr)
+        results['V_irfree_AVG'] = V_irfree_avg
+        results['P_irfree_AVG'] = j * V_irfree_avg
+
     return results
 
 
@@ -1509,6 +1536,9 @@ def plot_polcurve(results, save_path=None):
     if results.get('V_irfree_CI') is not None:
         ax.plot(j, results['V_irfree_CI'], 'D--', color='purple', ms=3, lw=1.2,
                 alpha=0.7, label='iR-free (current interrupt)')
+    if results.get('V_irfree_AVG') is not None:
+        ax.plot(j, results['V_irfree_AVG'], '^--', color='saddlebrown', ms=3, lw=1.2,
+                alpha=0.7, label='iR-free (avg HFR & CI)')
     ax.set_xlabel('Current density (A/cm²)')
     ax.set_ylabel('Voltage (V)')
     ax.set_ylim(bottom=0)
@@ -1545,6 +1575,10 @@ def plot_polcurve(results, save_path=None):
             ax.plot(j, results['CI_HFR_ASR'] * 1000, 'D-', color='teal',
                     ms=4, lw=1.5,
                     label=f'CI HFR = {results["CI_HFR_mean"]*1000:.1f} mΩ·cm²')
+        if results.get('AVG_HFR_ASR') is not None:
+            ax.plot(j, results['AVG_HFR_ASR'] * 1000, '^-', color='saddlebrown',
+                    ms=4, lw=1.5,
+                    label=f'Avg HFR = {results["AVG_HFR_mean"]*1000:.1f} mΩ·cm²')
         ax.set_xlabel('Current density (A/cm²)')
         ax.set_ylabel('HFR (mΩ·cm²)')
         title_bits = []
@@ -1552,6 +1586,8 @@ def plot_polcurve(results, save_path=None):
             title_bits.append(f'EIS {results["HFR_mean"]*1000:.1f}')
         if results.get('CI_HFR_mean') is not None:
             title_bits.append(f'CI {results["CI_HFR_mean"]*1000:.1f}')
+        if results.get('AVG_HFR_mean') is not None:
+            title_bits.append(f'Avg {results["AVG_HFR_mean"]*1000:.1f}')
         ax.set_title('HFR — ' + ' vs '.join(title_bits) + ' mΩ·cm²'
                      if title_bits else 'HFR')
         ax.legend(loc='best', fontsize=8)
@@ -1846,6 +1882,8 @@ def save_single_excel(results, filepath):
         summary.append(('Mean EIS HFR (mΩ·cm²)', results['HFR_mean'] * 1000))
     if results.get('CI_HFR_mean') is not None:
         summary.append(('Mean CI HFR (mΩ·cm²)', results['CI_HFR_mean'] * 1000))
+    if results.get('AVG_HFR_mean') is not None:
+        summary.append(('Mean Avg HFR (mΩ·cm²)', results['AVG_HFR_mean'] * 1000))
     if results['tafel'] is not None:
         t = results['tafel']
         summary.append(('Tafel Slope (mV/dec)', t['tafel_slope_mVdec']))
@@ -1871,14 +1909,19 @@ def save_single_excel(results, filepath):
     rep_headers = ['j (A/cm²)', 'j (mA/cm²)', 'V (V)']
     has_hfr = results['HFR'] is not None
     has_ci = results.get('CI_HFR') is not None
+    has_avg = results.get('AVG_HFR') is not None
     if has_hfr:
         rep_headers.append('EIS HFR (mΩ·cm²)')
     if has_ci:
         rep_headers.append('CI HFR (mΩ·cm²)')
+    if has_avg:
+        rep_headers.append('Avg HFR (mΩ·cm²)')
     if results['V_irfree'] is not None:
         rep_headers.append('V_iR-free EIS (V)')
     if results.get('V_irfree_CI') is not None:
         rep_headers.append('V_iR-free CI (V)')
+    if results.get('V_irfree_AVG') is not None:
+        rep_headers.append('V_iR-free Avg (V)')
     rep_headers.append('Power (mW/cm²)')
 
     for c, h in enumerate(rep_headers, 1):
@@ -1903,12 +1946,18 @@ def save_single_excel(results, filepath):
         if has_ci:
             ws.cell(row=row, column=col,
                     value=round(float(results['CI_HFR_ASR'][i]) * 1000, 2)); col += 1
+        if has_avg:
+            ws.cell(row=row, column=col,
+                    value=round(float(results['AVG_HFR_ASR'][i]) * 1000, 2)); col += 1
         if results['V_irfree'] is not None:
             ws.cell(row=row, column=col,
                     value=round(float(results['V_irfree'][i]), 6)); col += 1
         if results.get('V_irfree_CI') is not None:
             ws.cell(row=row, column=col,
                     value=round(float(results['V_irfree_CI'][i]), 6)); col += 1
+        if results.get('V_irfree_AVG') is not None:
+            ws.cell(row=row, column=col,
+                    value=round(float(results['V_irfree_AVG'][i]), 6)); col += 1
         ws.cell(row=row, column=col, value=round(float(P[i]) * 1000, 2))
 
     # ── Sheet 2: All Cycles Data ──
@@ -2030,10 +2079,13 @@ def save_batch_excel(all_results, summary_rows, filepath):
         j, V, P = r['j'], r['V'], r['P']
         has_h = r.get('HFR') is not None
         has_ci = r.get('CI_HFR') is not None
+        has_avg = r.get('AVG_HFR') is not None
         has_irfree = r.get('V_irfree') is not None
         has_irfree_ci = r.get('V_irfree_CI') is not None
-        # j_A, j_mA, V, [EIS HFR], [CI HFR], [iRfree EIS], [iRfree CI], Power
-        n_cols = 4 + int(has_h) + int(has_ci) + int(has_irfree) + int(has_irfree_ci)
+        has_irfree_avg = r.get('V_irfree_AVG') is not None
+        # j_A, j_mA, V, [EIS],[CI],[Avg], [irEIS],[irCI],[irAvg], Power
+        n_cols = (4 + int(has_h) + int(has_ci) + int(has_avg)
+                  + int(has_irfree) + int(has_irfree_ci) + int(has_irfree_avg))
         col_end = col + n_cols - 1
 
         # Label row
@@ -2048,8 +2100,10 @@ def save_batch_excel(all_results, summary_rows, filepath):
         hdrs = ['j (A/cm²)', 'j (mA/cm²)', 'V (V)']
         if has_h: hdrs.append('EIS HFR (mΩ·cm²)')
         if has_ci: hdrs.append('CI HFR (mΩ·cm²)')
+        if has_avg: hdrs.append('Avg HFR (mΩ·cm²)')
         if has_irfree: hdrs.append('V_iR-free EIS (V)')
         if has_irfree_ci: hdrs.append('V_iR-free CI (V)')
+        if has_irfree_avg: hdrs.append('V_iR-free Avg (V)')
         hdrs.append('Power (mW/cm²)')
         for ci, h in enumerate(hdrs):
             cell = ws.cell(row=data_start + 1, column=col + ci, value=h)
@@ -2071,12 +2125,18 @@ def save_batch_excel(all_results, summary_rows, filepath):
             if has_ci:
                 ws.cell(row=row, column=cc,
                         value=round(float(r['CI_HFR_ASR'][ri]) * 1000, 2)); cc += 1
+            if has_avg:
+                ws.cell(row=row, column=cc,
+                        value=round(float(r['AVG_HFR_ASR'][ri]) * 1000, 2)); cc += 1
             if has_irfree:
                 ws.cell(row=row, column=cc,
                         value=round(float(r['V_irfree'][ri]), 6)); cc += 1
             if has_irfree_ci:
                 ws.cell(row=row, column=cc,
                         value=round(float(r['V_irfree_CI'][ri]), 6)); cc += 1
+            if has_irfree_avg:
+                ws.cell(row=row, column=cc,
+                        value=round(float(r['V_irfree_AVG'][ri]), 6)); cc += 1
             ws.cell(row=row, column=cc, value=round(float(P[ri]) * 1000, 2))
 
         col = col_end + 2
@@ -2343,6 +2403,8 @@ def run_batch(filepaths, labels, geo_area,
                 row['Mean EIS HFR (mOhm·cm2)'] = r['HFR_mean'] * 1000
             if r.get('CI_HFR_mean') is not None:
                 row['Mean CI HFR (mOhm·cm2)'] = r['CI_HFR_mean'] * 1000
+            if r.get('AVG_HFR_mean') is not None:
+                row['Mean Avg HFR (mOhm·cm2)'] = r['AVG_HFR_mean'] * 1000
             if r['tafel'] is not None:
                 row['Tafel (mV/dec)'] = r['tafel']['tafel_slope_mVdec']
                 row['j0 (A/cm2)'] = r['tafel']['j0_A_cm2']
