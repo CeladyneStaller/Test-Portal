@@ -298,6 +298,81 @@
     margin: 10px 2px;
   }
 
+  /* ─── View tab: run detail ────────────────── */
+  .runs-table tr.detail-row > td { padding: 0; background: var(--bg); }
+  .run-detail { padding: 16px 14px 20px; }
+  .run-detail.loading { color: var(--text-dim); font-size: 13px; }
+  .rd-analysis { margin-bottom: 18px; }
+  .rd-analysis:last-child { margin-bottom: 0; }
+  .rd-analysis-head {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--accent);
+    margin-bottom: 8px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid var(--border);
+  }
+  .rd-plot {
+    display: flex;
+    gap: 14px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .rd-plot:last-child { border-bottom: none; }
+  .rd-thumb {
+    flex: 0 0 140px;
+    width: 140px;
+    height: 100px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-raised);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    cursor: pointer;
+    position: relative;
+  }
+  .rd-thumb img { width: 100%; height: 100%; object-fit: contain; }
+  .rd-thumb.unrenderable {
+    cursor: default;
+    color: var(--text-dim);
+    font-size: 10px;
+    text-align: center;
+    padding: 6px;
+    line-height: 1.4;
+  }
+  .rd-thumb .thumb-spin { color: var(--text-dim); font-size: 11px; }
+  .rd-plot-body { flex: 1 1 auto; min-width: 0; }
+  .rd-plot-name {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    margin-bottom: 4px;
+    word-break: break-all;
+  }
+  .rd-conditions { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; }
+  .rd-values { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .rd-val { font-size: 12px; color: var(--text-dim); }
+  .rd-val b { color: var(--text); font-weight: 500; }
+  .rd-summary {
+    margin-top: 4px;
+    padding: 10px 12px;
+    background: var(--surface-raised);
+    border-radius: var(--radius);
+    font-size: 12px;
+  }
+  .rd-summary-head { color: var(--text-dim); font-weight: 600; margin-bottom: 6px; }
+  .rd-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 3px 16px;
+  }
+  .rd-summary-grid .k { color: var(--text-dim); }
+  .rd-summary-grid .v { color: var(--text); font-family: var(--mono); }
+
   /* ── Form ───────────────────────────────────── */
 
   .field { margin-bottom: 18px; }
@@ -1819,7 +1894,8 @@ function renderViewRuns(rows) {
     const kv = runKeyValues(r);
     const kvStr = Object.entries(kv).slice(0, 3).map(([k, v]) =>
       `${escapeHtml(k)}=<b>${escapeHtml(fmtNum(v))}</b>`).join(' · ') || '—';
-    return `<tr class="run-row" onclick="openRunDetail('${escapeAttr(r.job_id)}')">
+    return `<tr class="run-row" data-job="${escapeAttr(r.job_id)}"
+        onclick="openRunDetail('${escapeAttr(r.job_id)}')">
       <td class="sample-cell">${escapeHtml(r.sample_name || '—')}</td>
       <td>${escapeHtml(r.script || '—')}</td>
       <td class="mono">${escapeHtml(fmtTimestamp(r.timestamp))}</td>
@@ -1843,9 +1919,173 @@ function fmtNum(v) {
   return String(Math.round(v * 1e4) / 1e4);
 }
 
-// Run detail (phase 3) — placeholder so the row click is inert-safe for now.
-function openRunDetail(jobId) {
-  console.log('run detail for', jobId, '— phase 3');
+// Run detail — expand a row inline to show per-plot metrics and thumbnails.
+const _detailCache = {};       // job_id → detail payload
+const _thumbUrls = {};         // "job_id::plot" → object URL, so we revoke later
+let _openDetailJob = null;
+
+async function openRunDetail(jobId) {
+  const row = document.querySelector(`tr.run-row[data-job="${cssEscape(jobId)}"]`);
+  if (!row) return;
+
+  // Toggle: clicking the open row again collapses it.
+  const existing = row.nextElementSibling;
+  if (existing && existing.classList.contains('detail-row')
+      && existing.dataset.job === jobId) {
+    existing.remove();
+    _openDetailJob = null;
+    return;
+  }
+  // Only one detail open at a time.
+  document.querySelectorAll('tr.detail-row').forEach(r => r.remove());
+  _openDetailJob = jobId;
+
+  const colspan = row.children.length;
+  const dr = document.createElement('tr');
+  dr.className = 'detail-row';
+  dr.dataset.job = jobId;
+  dr.innerHTML = `<td colspan="${colspan}">
+    <div class="run-detail loading">Loading run details…</div></td>`;
+  row.after(dr);
+
+  try {
+    const detail = _detailCache[jobId] || await (async () => {
+      const r = await fetch(`/api/view/runs/${encodeURIComponent(jobId)}`);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      _detailCache[jobId] = d;
+      return d;
+    })();
+    if (_openDetailJob !== jobId) return;  // collapsed while loading
+    dr.querySelector('.run-detail').outerHTML = renderRunDetail(detail);
+    hydrateThumbs(jobId);
+  } catch (e) {
+    const el = dr.querySelector('.run-detail');
+    if (el) el.textContent = 'Could not load details: ' + (e.message || e);
+  }
+}
+
+function renderRunDetail(detail) {
+  const plots = detail.plots || [];
+  // Group plots by analysis bucket.
+  const byBucket = {};
+  plots.forEach(p => { (byBucket[p.analysis] = byBucket[p.analysis] || []).push(p); });
+
+  let html = '<div class="run-detail">';
+
+  Object.keys(byBucket).sort().forEach(bucket => {
+    html += `<div class="rd-analysis">
+      <div class="rd-analysis-head">${escapeHtml(bucket)}</div>`;
+    byBucket[bucket].forEach(p => {
+      const condStr = Object.entries(p.conditions || {})
+        .map(([k, v]) => `${escapeHtml(k)} ${escapeHtml(fmtNum(v))}`).join(' · ');
+      const valStr = Object.entries(p.values || {}).map(([k, v]) =>
+        `<span class="rd-val">${escapeHtml(k)} <b>${escapeHtml(fmtVal(v))}</b></span>`
+      ).join('');
+
+      const thumb = p.renderable
+        ? `<div class="rd-thumb" data-plot="${escapeAttr(p.plot)}"
+                onclick="openHistoricalPlot('${escapeAttr(detail.job_id)}','${escapeAttr(p.plot)}')">
+             <span class="thumb-spin">loading…</span></div>`
+        : `<div class="rd-thumb unrenderable" title="Sidecar not stored for this plot">
+             plot data<br>not stored</div>`;
+
+      html += `<div class="rd-plot">
+        ${thumb}
+        <div class="rd-plot-body">
+          <div class="rd-plot-name">${escapeHtml(p.plot)}</div>
+          ${condStr ? `<div class="rd-conditions">${condStr}</div>` : ''}
+          <div class="rd-values">${valStr || '<span class="rd-val">—</span>'}</div>
+        </div>
+      </div>`;
+    });
+    html += '</div>';
+  });
+
+  // Tier 1 summary block, if present.
+  const summary = detail.summary;
+  if (Array.isArray(summary) && summary.length) {
+    summary.forEach((row, i) => {
+      const label = row.Label || row.label || (`Row ${i + 1}`);
+      const entries = Object.entries(row).filter(([k]) => k !== 'Label' && k !== 'label');
+      if (!entries.length) return;
+      html += `<div class="rd-summary">
+        <div class="rd-summary-head">Summary — ${escapeHtml(String(label))}</div>
+        <div class="rd-summary-grid">${entries.map(([k, v]) =>
+          `<div><span class="k">${escapeHtml(k)}</span> `
+          + `<span class="v">${escapeHtml(fmtVal(v))}</span></div>`).join('')}
+        </div></div>`;
+    });
+  }
+
+  html += '</div>';
+  return html;
+}
+
+// Fetch each renderable plot's PNG and drop it into its thumbnail.
+async function hydrateThumbs(jobId) {
+  const dr = document.querySelector(`tr.detail-row[data-job="${cssEscape(jobId)}"]`);
+  if (!dr) return;
+  const thumbs = dr.querySelectorAll('.rd-thumb[data-plot]');
+  for (const el of thumbs) {
+    const plot = el.dataset.plot;
+    const key = jobId + '::' + plot;
+    try {
+      let url = _thumbUrls[key];
+      if (!url) {
+        const r = await fetch('/api/view/render', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id: jobId, plot })
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        url = URL.createObjectURL(await r.blob());
+        _thumbUrls[key] = url;
+      }
+      if (_openDetailJob !== jobId) return;  // collapsed mid-flight
+      el.innerHTML = `<img src="${url}" alt="${escapeAttr(plot)}">`;
+    } catch (e) {
+      el.classList.add('unrenderable');
+      el.innerHTML = 'render<br>failed';
+      el.onclick = null;
+    }
+  }
+}
+
+// Reuse the existing lightbox for a full-size historical plot.
+async function openHistoricalPlot(jobId, plot) {
+  const key = jobId + '::' + plot;
+  try {
+    let url = _thumbUrls[key];
+    if (!url) {
+      const r = await fetch('/api/view/render', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: jobId, plot })
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      url = URL.createObjectURL(await r.blob());
+      _thumbUrls[key] = url;
+    }
+    openLightbox(url, plot);
+  } catch (e) {
+    console.error('historical plot render failed', e);
+  }
+}
+
+function fmtVal(v) {
+  // Handles {value, unit} objects, bare numbers, and strings.
+  if (v && typeof v === 'object' && 'value' in v) {
+    const n = fmtNum(v.value);
+    return v.unit ? `${n} ${v.unit}` : n;
+  }
+  return fmtNum(v);
+}
+
+// CSS.escape isn't universal in older engines; minimal fallback for our IDs.
+function cssEscape(s) {
+  if (window.CSS && CSS.escape) return CSS.escape(s);
+  return String(s).replace(/["\\\]]/g, '\\$&');
 }
 
 function escapeHtml(s) {
