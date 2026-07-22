@@ -116,10 +116,28 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
             f"Analysis produced no output. {len(csv_files)} file(s) were found "
             f"but none could be processed. Check file format and parameters."
         )
+    # Tier 1 summary scalars. 'average_ECSA_m2_per_g' is what the record
+    # builder promotes as 'Average ECSA' — sourcing it here rather than from
+    # the H_UPD annotation box avoids that box's malformed key = value form.
+    summary = []
+    for r in (all_results or []):
+        row = {'Label': r.get('label', '')}
+        for key in ('average_ECSA_m2_per_g', 'average_ECSA_cm2', 'average_RF',
+                    'anodic_ECSA_m2_per_g', 'anodic_RF',
+                    'cathodic_ECSA_m2_per_g', 'cathodic_RF',
+                    'ECSA_m2_per_g', 'ECSA_cm2', 'roughness_factor',
+                    'Q_hupd_mC_cm2', 'Q_co_mC_cm2',
+                    'loading_mg_cm2', 'geo_area'):
+            v = r.get(key)
+            if isinstance(v, (int, float)):
+                row[key] = float(v)
+        summary.append(row)
+
     return {
         "status": "success",
         "files_processed": len(csv_files),
         "files_produced": output_files,
+        "summary": summary,
     }
 
 # ─── Physical constants ───────────────────────────────────────────────
@@ -724,22 +742,26 @@ def plot_hupd_analysis(results, save_path=None):
     ax.legend(fontsize=8)
 
     # ── Annotation box ──
+    # One 'key = value' per line. The previous form packed two metrics onto
+    # one line — 'Anodic:   RF=12.3  45.6 m²/g' — which parses to the key
+    # 'Anodic:   RF' with '45.6' captured as its unit, losing the mass-specific
+    # ECSA entirely and producing a key with embedded whitespace.
     lines = []
     if has_an:
-        line = f'Anodic:   RF={results["anodic_RF"]:.1f}'
+        lines.append(f'Anodic RF = {results["anodic_RF"]:.1f}')
         if 'anodic_ECSA_m2_per_g' in results:
-            line += f'  {results["anodic_ECSA_m2_per_g"]:.1f} m²/g'
-        lines.append(line)
+            lines.append(
+                f'Anodic ECSA = {results["anodic_ECSA_m2_per_g"]:.1f} m²/g')
     if has_ca:
-        line = f'Cathodic: RF={results["cathodic_RF"]:.1f}'
+        lines.append(f'Cathodic RF = {results["cathodic_RF"]:.1f}')
         if 'cathodic_ECSA_m2_per_g' in results:
-            line += f'  {results["cathodic_ECSA_m2_per_g"]:.1f} m²/g'
-        lines.append(line)
+            lines.append(
+                f'Cathodic ECSA = {results["cathodic_ECSA_m2_per_g"]:.1f} m²/g')
     if 'average_ECSA_cm2' in results:
-        line = f'Average:  RF={results["average_RF"]:.1f}'
+        lines.append(f'Average RF = {results["average_RF"]:.1f}')
         if 'average_ECSA_m2_per_g' in results:
-            line += f'  {results["average_ECSA_m2_per_g"]:.1f} m²/g'
-        lines.append(line)
+            lines.append(
+                f'Average ECSA = {results["average_ECSA_m2_per_g"]:.1f} m²/g')
     txt = '\n'.join(lines)
     ax.text(0.97, 0.97, txt, transform=ax.transAxes,
             ha='right', va='top', fontsize=9,
@@ -787,7 +809,13 @@ def plot_co_stripping(results, save_path=None):
     ax.set_ylabel('j$_{net}$ (mA cm$^{-2}$)')
     ax.set_title(f'CO Oxidation — Q = {results["Q_co_mC_cm2"]:.2f} mC/cm²')
 
-    txt = f'ECSA = {results["ECSA_cm2"]:.2f} cm²$_{{Pt}}$\nRF = {results["roughness_factor"]:.1f}'
+    # Q_CO lives only in the panel title, which the comparison feature does
+    # not read, so it is repeated here. LaTeX subscript markup is dropped from
+    # the box text — it would land verbatim in the parsed unit — while the
+    # axis label keeps the typeset form.
+    txt = (f'Q_CO = {results["Q_co_mC_cm2"]:.2f} mC/cm²\n'
+           f'ECSA = {results["ECSA_cm2"]:.2f} cm²_Pt\n'
+           f'RF = {results["roughness_factor"]:.1f}')
     if 'ECSA_m2_per_g' in results:
         txt += f'\n{results["ECSA_m2_per_g"]:.1f} m²/g$_{{Pt}}$'
     ax.text(0.97, 0.97, txt, transform=ax.transAxes,

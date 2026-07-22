@@ -761,8 +761,37 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
             f"Found {len(matched)} candidate file(s) but all were skipped."
         )
 
+    # Tier 1 summary scalars, mirroring the Excel Summary sheet.
+    summary = []
+    for r in (results or []):
+        m = r.get('metrics') or []
+        if not m:
+            continue
+        n = len(m)
+        n_avg = min(5, n)
+        tail = m[-n_avg:]
+        init_dl = float(m[0]['DL_mean_mA_cm2'])
+        final_dl = float(np.mean([x['DL_mean_mA_cm2'] for x in tail]))
+        conv = r.get('conv_idx')
+        summary.append({
+            'Label': r.get('label', ''),
+            'n_cycles': n,
+            'convergence_cycle': (conv + 1) if conv is not None else None,
+            'converged': conv is not None,
+            'Q_anodic_final_mC_cm2':
+                float(np.mean([x['Q_anodic_mC_cm2'] for x in tail])),
+            'Q_cathodic_final_mC_cm2':
+                float(np.mean([x['Q_cathodic_mC_cm2'] for x in tail])),
+            'Q_ratio_final': float(np.mean([x['Q_ratio'] for x in tail])),
+            'DL_initial_mA_cm2': init_dl,
+            'DL_final_mA_cm2': final_dl,
+            'DL_reduction_pct':
+                ((1.0 - final_dl / init_dl) * 100.0) if init_dl > 0 else 0.0,
+        })
+
     return {
         'status': 'success',
         'files_processed': len(results),
         'files_produced': output_files,
+        'summary': summary,
     }

@@ -173,12 +173,17 @@ def _on_job_done(job_id: str, future):
                               or jobs[job_id].get("is_comparison"))
             if not is_comparison and result.get("output_files"):
                 should_push = True
+                from scripts import SCRIPT_SHORT
                 push_args = {
                     'job_id': job_id,
                     'sample_name': jobs[job_id].get("sample_name", ""),
                     'script': script_name,
                     'output_dir': JOBS_DIR / job_id / "output",
                     'input_files': jobs[job_id].get("input_files", []),
+                    'script_short': SCRIPT_SHORT.get(script_name, ""),
+                    # Tier 1 summary scalars. Scripts that do not yet return a
+                    # 'summary' key simply omit it; the record tolerates absence.
+                    'summary': (result.get("script_result") or {}).get("summary"),
                 }
         except Exception as e:
             jobs[job_id].update({

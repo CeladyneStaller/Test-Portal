@@ -75,7 +75,20 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
             f'Analysis produced no output. {len(files)} file(s) were found '
             f'but none could be processed. Check file format and parameters.'
         )
-    return {"status": "success", "files_processed": len(files), "files_produced": output_files}
+    # Tier 1 summary scalars.
+    summary = []
+    for r in (results or []):
+        row = {'Label': r.get('label', '')}
+        for key in ('j_xover_mA_cm2', 'J_H2_nmol_cm2_s', 'J_H2_mL_min_cm2',
+                    'K_H2_mol_cm_s_Pa', 'j_avg_mean_mA_cm2',
+                    'membrane_thickness_um', 'geo_area'):
+            v = r.get(key)
+            if isinstance(v, (int, float)):
+                row[key] = float(v)
+        summary.append(row)
+
+    return {"status": "success", "files_processed": len(files),
+            "files_produced": output_files, "summary": summary}
 
 FARADAY = 96485.3329
 N_ELECTRONS = 2

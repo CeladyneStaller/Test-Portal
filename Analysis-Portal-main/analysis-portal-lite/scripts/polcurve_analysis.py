@@ -115,7 +115,29 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
             f'Analysis produced no output. {len(files)} file(s) were found '
             f'but none could be processed. Check file format and parameters.'
         )
-    return {"status": "success", "files_processed": len(files), "files_produced": output_files}
+    # Tier 1 summary scalars, taken from the results dicts rather than
+    # scraped from plot annotations. Consumed by the JSONBin record builder;
+    # key names match its key_values candidate lists.
+    summary = []
+    for r in (results or []):
+        row = {'Label': r.get('label', '')}
+        for src, dst in (('OCV', 'OCV'),
+                         ('V_at_1Acm2', 'V_at_1Acm2'),
+                         ('peak_power_W_cm2', 'peak_power_W_cm2'),
+                         ('j_at_peak_power', 'j_at_peak_power'),
+                         ('HFR_mean', 'HFR_mean')):
+            v = r.get(src)
+            if v is not None:
+                row[dst] = float(v)
+        t = r.get('tafel')
+        if t:
+            row['tafel_slope_mVdec'] = float(t['tafel_slope_mVdec'])
+            row['j0_A_cm2'] = float(t['j0_A_cm2'])
+            row['tafel_R_squared'] = float(t['R_squared'])
+        summary.append(row)
+
+    return {"status": "success", "files_processed": len(files),
+            "files_produced": output_files, "summary": summary}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1482,7 +1504,18 @@ def plot_polcurve(results, save_path=None):
         ax.plot(j, HFR_ASR * 1000, 'o-', color='darkorange', ms=4, lw=1.5)
         ax.set_xlabel('Current density (A/cm²)')
         ax.set_ylabel('HFR (mΩ·cm²)')
-        ax.set_title(f'HFR — mean = {results["HFR_mean"]*1000:.1f} mΩ·cm²')
+        # Value-free title: the comparison Excel prefixes each metric column
+        # with the axis title, so embedding a number here would stamp the first
+        # sample's value onto every sample's column header. The mean lives in
+        # the readout box below instead.
+        ax.set_title('HFR')
+        # Readout box, not just the title: the comparison feature reads text
+        # annotations and labelled reference lines, never titles or legends,
+        # so a title-only value never reaches a comparison plot or its Excel.
+        ax.text(0.97, 0.03,
+                f'Mean HFR = {results["HFR_mean"]*1000:.1f} mΩ·cm²',
+                transform=ax.transAxes, ha='right', va='bottom', fontsize=9,
+                bbox=dict(boxstyle='round,pad=0.4', fc='lightyellow', alpha=0.9))
         ax.grid(True, alpha=0.3)
         panel += 1
 

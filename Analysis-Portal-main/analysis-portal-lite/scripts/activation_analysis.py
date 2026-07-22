@@ -586,8 +586,25 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
             f"(possibly under {MIN_DURATION_MIN} min duration or unparseable)."
         )
 
+    # Tier 1 summary scalars. datasets are (time, j, voltage, label) tuples.
+    summary = []
+    for time, j, voltage, lbl in (datasets or []):
+        if time is None or len(time) < 2:
+            continue
+        i_max = int(np.argmax(j))
+        summary.append({
+            'Label': lbl,
+            'duration_min': float((time[-1] - time[0]) / 60.0),
+            'V_start': float(voltage[0]),
+            'V_end': float(voltage[-1]),
+            'j_max_A_cm2': float(j[i_max]),
+            'V_at_j_max': float(voltage[i_max]),
+            'n_points': int(len(time)),
+        })
+
     return {
         'status': 'success',
         'files_processed': len(datasets),
         'files_produced': output_files,
+        'summary': summary,
     }

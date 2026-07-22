@@ -77,7 +77,21 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
             f'Analysis produced no output. {len(files)} file(s) were found '
             f'but none could be processed. Check file format and parameters.'
         )
-    return {"status": "success", "files_processed": len(files), "files_produced": output_files}
+    # Tier 1 summary scalars. HFR is area-normalised (Ω·cm²) whenever
+    # geo_area is set, which it always is via the portal.
+    summary = []
+    for r in (results or []):
+        row = {'Label': r.get('Label') or r.get('label', '')}
+        for key in ('HFR', 'R_ohm', 'R_ct', 'R_mt', 'R_squared', 'geo_area'):
+            v = r.get(key)
+            if isinstance(v, (int, float)):
+                row[key] = float(v)
+        if r.get('model_name'):
+            row['model_name'] = r['model_name']
+        summary.append(row)
+
+    return {"status": "success", "files_processed": len(files),
+            "files_produced": output_files, "summary": summary}
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -114,7 +114,25 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
             f'Analysis produced no output. {len(files)} file(s) were found '
             f'but none could be processed. Check file format and parameters.'
         )
-    return {"status": "success", "files_processed": len(files), "files_produced": output_files}
+    # Tier 1 summary scalars, taken from the results dicts rather than
+    # scraped from plot annotations.
+    summary = []
+    for r in (results or []):
+        row = {'Label': r.get('label', '')}
+        for key in ('OCV', 'V_at_1Acm2', 'peak_power_W_cm2',
+                    'j_at_peak_power', 'HFR_mean', 'CI_HFR_mean', 'AVG_HFR_mean'):
+            v = r.get(key)
+            if isinstance(v, (int, float)):
+                row[key] = float(v)
+        t = r.get('tafel')
+        if t:
+            row['tafel_slope_mVdec'] = float(t['tafel_slope_mVdec'])
+            row['j0_A_cm2'] = float(t['j0_A_cm2'])
+            row['tafel_R_squared'] = float(t['R_squared'])
+        summary.append(row)
+
+    return {"status": "success", "files_processed": len(files),
+            "files_produced": output_files, "summary": summary}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1581,15 +1599,24 @@ def plot_polcurve(results, save_path=None):
                     label=f'Avg HFR = {results["AVG_HFR_mean"]*1000:.1f} mΩ·cm²')
         ax.set_xlabel('Current density (A/cm²)')
         ax.set_ylabel('HFR (mΩ·cm²)')
-        title_bits = []
+        # Value-free title — see the note in polcurve_analysis.py. The three
+        # means are in the readout box and the legend.
+        ax.set_title('HFR — EIS vs Current Interrupt')
+        # Legend labels are not read by the comparison feature — only text
+        # annotations and labelled reference lines are — so the three means
+        # are repeated here to make them comparable.
+        readout = []
         if results.get('HFR_mean') is not None:
-            title_bits.append(f'EIS {results["HFR_mean"]*1000:.1f}')
+            readout.append(f'Mean EIS HFR = {results["HFR_mean"]*1000:.1f} mΩ·cm²')
         if results.get('CI_HFR_mean') is not None:
-            title_bits.append(f'CI {results["CI_HFR_mean"]*1000:.1f}')
+            readout.append(f'Mean CI HFR = {results["CI_HFR_mean"]*1000:.1f} mΩ·cm²')
         if results.get('AVG_HFR_mean') is not None:
-            title_bits.append(f'Avg {results["AVG_HFR_mean"]*1000:.1f}')
-        ax.set_title('HFR — ' + ' vs '.join(title_bits) + ' mΩ·cm²'
-                     if title_bits else 'HFR')
+            readout.append(f'Mean Avg HFR = {results["AVG_HFR_mean"]*1000:.1f} mΩ·cm²')
+        if readout:
+            ax.text(0.97, 0.03, '\n'.join(readout), transform=ax.transAxes,
+                    ha='right', va='bottom', fontsize=8,
+                    bbox=dict(boxstyle='round,pad=0.4', fc='lightyellow',
+                              alpha=0.9))
         ax.legend(loc='best', fontsize=8)
         ax.grid(True, alpha=0.3)
         panel += 1
