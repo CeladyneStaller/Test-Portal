@@ -173,14 +173,21 @@ def _on_job_done(job_id: str, future):
                               or jobs[job_id].get("is_comparison"))
             if not is_comparison and result.get("output_files"):
                 should_push = True
-                from scripts import SCRIPT_SHORT
+                # Isolated: this import runs in the main process, not the pool
+                # worker that ran the analysis, so it can fail independently.
+                # Letting it raise here would mark a successful analysis failed.
+                try:
+                    from scripts import SCRIPT_SHORT
+                    _short = SCRIPT_SHORT.get(script_name, "")
+                except Exception:
+                    _short = ""
                 push_args = {
                     'job_id': job_id,
                     'sample_name': jobs[job_id].get("sample_name", ""),
                     'script': script_name,
                     'output_dir': JOBS_DIR / job_id / "output",
                     'input_files': jobs[job_id].get("input_files", []),
-                    'script_short': SCRIPT_SHORT.get(script_name, ""),
+                    'script_short': _short,
                     # Tier 1 summary scalars. Scripts that do not yet return a
                     # 'summary' key simply omit it; the record tolerates absence.
                     'summary': (result.get("script_result") or {}).get("summary"),
@@ -197,26 +204,25 @@ def _on_job_done(job_id: str, future):
     # under retry; we don't want to block status polls).
     if should_push:
         try:
-            from scripts.helpers.jsonbin import push_job_metrics, is_configured
-            if is_configured():
-                push_result = push_job_metrics(**push_args)
-                if not push_result.get('pushed'):
-                    # Record the warning in the job message but keep status complete
-                    with jobs_lock:
-                        if job_id in jobs:
-                            current_msg = jobs[job_id].get("message", "")
-                            warning = f"Metrics push warning: {push_result.get('reason', 'unknown')}"
-                            jobs[job_id]["message"] = (
-                                f"{current_msg} ({warning})" if current_msg else warning)
-                            jobs[job_id]["metrics_push"] = push_result
-                else:
-                    with jobs_lock:
-                        if job_id in jobs:
-                            jobs[job_id]["metrics_push"] = {
-                                'pushed': True, 'reason': None,
-                                # Don't store the full metrics dict in job state to keep memory lean;
-                                # the run is now in JSONBin.
-                            }
+            from scripts.helpers.jsonbin import push_job_metrics
+            # push_job_metrics performs its own configuration check and returns
+            # a descriptive reason. Guarding this call with is_configured() made
+            # an unconfigured environment completely silent — no warning, no
+            # metrics_push entry, nothing to diagnose from. Always call, always
+            # record the outcome.
+            push_result = push_job_metrics(**push_args)
+            with jobs_lock:
+                if job_id in jobs:
+                    jobs[job_id]["metrics_push"] = push_result
+                    if not push_result.get('pushed'):
+                        current_msg = jobs[job_id].get("message", "")
+                        warning = ("Metrics push warning: "
+                                   + str(push_result.get('reason', 'unknown')))
+                        jobs[job_id]["message"] = (
+                            f"{current_msg} ({warning})" if current_msg else warning)
+            print(f"[metrics] job={job_id} pushed={push_result.get('pushed')} "
+                  f"bin={push_result.get('bin_id')} "
+                  f"reason={push_result.get('reason')}", flush=True)
         except Exception as e:
             # Never let a metrics-push failure mark the analysis as failed.
             with jobs_lock:
@@ -225,6 +231,7 @@ def _on_job_done(job_id: str, future):
                         'pushed': False,
                         'reason': f'unexpected error: {e}'
                     }
+            print(f"[metrics] job={job_id} unexpected error: {e}", flush=True)
 
 
 # ═══════════════════════════════════════════════════════════════════
