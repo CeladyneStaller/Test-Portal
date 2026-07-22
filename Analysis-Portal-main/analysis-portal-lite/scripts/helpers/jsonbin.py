@@ -52,9 +52,19 @@ from scripts.helpers.record import (
     build_index_entry,
     detail_bin_name,
     is_comparison_script,
+    strip_sidecars,
 )
 
 _JSONBIN_BASE = "https://api.jsonbin.io/v3/b"
+
+# JSONBin fronts its API with nginx, which rejects bodies over its
+# client_max_body_size with a 413 before the request reaches their application.
+# That proxy cap is far below the documented 10 MB bin size — nginx defaults to
+# 1 MB — so the effective transport limit is the proxy's, not the plan's.
+# Sidecars are compressed to stay under it; this is the backstop for runs that
+# still exceed it, and the threshold leaves headroom for headers and framing.
+MAX_BODY_BYTES = int(os.environ.get('JSONBIN_MAX_BODY_BYTES', 900_000))
+
 _TIMEOUT_S = 20
 _MAX_RETRIES = 3
 _RETRY_BACKOFF_S = 1.5  # exponential: 1.5, 3.0, 6.0
@@ -243,7 +253,8 @@ def push_job_metrics(*,
     problem can never fail an analysis that otherwise succeeded.
     """
     out: Dict[str, Any] = {'pushed': False, 'reason': None,
-                           'bin_id': None, 'n_runs': None}
+                           'bin_id': None, 'n_runs': None,
+                           'body_bytes': None, 'sidecars_omitted': False}
 
     # Comparison output is derived from runs already stored. Excluded here as
     # well as in record.py so the rule holds regardless of caller.
@@ -275,6 +286,20 @@ def push_job_metrics(*,
         out['reason'] = 'skipped: no sidecar data found in output'
         return out
 
+    # Size guard. Losing the whole run to a 413 is far worse than losing plot
+    # re-rendering for one heavy run, so an oversized record degrades to
+    # tier 1 — metrics, summary and conditions — rather than failing.
+    body_bytes = len(json.dumps(record, ensure_ascii=False).encode())
+    out['body_bytes'] = body_bytes
+    if body_bytes > MAX_BODY_BYTES:
+        record = strip_sidecars(
+            record,
+            f'record was {body_bytes:,} B, over the {MAX_BODY_BYTES:,} B '
+            f'transport limit')
+        body_bytes = len(json.dumps(record, ensure_ascii=False).encode())
+        out['sidecars_omitted'] = True
+        out['body_bytes'] = body_bytes
+
     try:
         bin_id = create_detail_bin(
             record, name=detail_bin_name(record, script_short))
@@ -300,4 +325,7 @@ def push_job_metrics(*,
         return out
 
     out['pushed'] = True
+    if out['sidecars_omitted']:
+        out['reason'] = ('pushed without sidecars — record exceeded the '
+                         'transport limit; metrics and summary are intact')
     return out

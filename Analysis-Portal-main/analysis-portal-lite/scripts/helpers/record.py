@@ -16,6 +16,8 @@ Content tiers (design doc §3.4, fork F):
   Tier 2 (Excel data tables) is deliberately omitted as redundant against tier 3.
 """
 
+import base64
+import gzip
 import json
 import math
 import os
@@ -24,6 +26,61 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 SCHEMA_VERSION = 2
+
+# ─────────────────────────────────────────────────────────────────────
+#  Sidecar encoding
+# ─────────────────────────────────────────────────────────────────────
+#
+# Sidecars are stored compressed. JSONBin's reverse proxy (nginx) rejects
+# request bodies over roughly 1 MB with a 413 — a limit well below the
+# documented 10 MB bin size, and enforced before the request reaches their
+# application. Sidecar arrays are highly repetitive numeric JSON and compress
+# around 6.5x raw, ~4.9x after base64 framing, which brings all but pathological
+# runs comfortably under the cap.
+#
+# Everything a human would inspect in the JSONBin dashboard — metrics, summary,
+# conditions — stays plain JSON. Only the machine-only sidecar block is opaque.
+
+SIDECAR_ENCODING = 'gzip+base64'
+
+
+def encode_sidecars(sidecars: Dict[str, Any]) -> Dict[str, Any]:
+    """Compress the sidecar block for transport."""
+    raw = json.dumps(sidecars, ensure_ascii=False, separators=(',', ':')).encode()
+    packed = base64.b64encode(gzip.compress(raw, 9)).decode('ascii')
+    return {'encoding': SIDECAR_ENCODING,
+            'n_plots': len(sidecars),
+            'raw_bytes': len(raw),
+            'data': packed}
+
+
+def decode_sidecars(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Recover the sidecar dict from a detail record.
+
+    Handles both the compressed form and the plain form, so a consumer does not
+    need to know which was written. Returns {} when a record carries none.
+    """
+    block = record.get('sidecars')
+    if not block:
+        return {}
+    if not isinstance(block, dict) or 'encoding' not in block:
+        return block  # plain, pre-compression form
+    if block.get('encoding') != SIDECAR_ENCODING:
+        raise ValueError(f"unknown sidecar encoding {block.get('encoding')!r}")
+    raw = gzip.decompress(base64.b64decode(block['data']))
+    return json.loads(raw.decode('utf-8'))
+
+
+def strip_sidecars(record: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    """Return a copy without sidecars, marked so the loss is visible.
+
+    Used when even the compressed record exceeds the transport limit. Metrics,
+    summary and conditions survive — only plot re-rendering is lost, and the
+    marker records why so it is not mistaken for a run that never had any.
+    """
+    out = {k: v for k, v in record.items() if k != 'sidecars'}
+    out['sidecars_omitted'] = reason
+    return out
 
 # ─────────────────────────────────────────────────────────────────────
 #  Comparison exclusion
@@ -384,7 +441,8 @@ def build_detail_record(*, job_id: str, sample_name: Optional[str], script: str,
                         timestamp: str, input_files: Optional[List[str]],
                         output_dir: Path,
                         summary: Optional[Any] = None,
-                        include_sidecars: bool = True) -> Dict[str, Any]:
+                        include_sidecars: bool = True,
+                        compress_sidecars: bool = True) -> Dict[str, Any]:
     """Assemble the schema-2 detail bin body for one completed job.
 
     metrics is nested bucket -> plot -> {conditions, values}. Each plot carries
@@ -444,7 +502,8 @@ def build_detail_record(*, job_id: str, sample_name: Optional[str], script: str,
     if summary:
         record['summary'] = summary
     if include_sidecars and sidecars:
-        record['sidecars'] = sidecars
+        record['sidecars'] = (encode_sidecars(sidecars) if compress_sidecars
+                              else sidecars)
     return record
 
 
