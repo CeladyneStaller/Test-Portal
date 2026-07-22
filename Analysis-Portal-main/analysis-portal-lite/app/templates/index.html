@@ -373,6 +373,40 @@
   .rd-summary-grid .k { color: var(--text-dim); }
   .rd-summary-grid .v { color: var(--text); font-family: var(--mono); }
 
+  /* ─── View tab: trends ────────────────────── */
+  .trend-metric {
+    margin-left: auto;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: var(--radius);
+    padding: 5px 10px;
+    font-family: var(--font);
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .trend-metric:hover { border-color: var(--accent); }
+  .trend-chart { width: 100%; height: auto; display: block; }
+  .trend-chart .axis { stroke: var(--border); stroke-width: 1; }
+  .trend-chart .grid { stroke: var(--border); stroke-width: 1; opacity: 0.4; }
+  .trend-chart .tick-label { fill: var(--text-dim); font-size: 11px;
+                             font-family: var(--mono); }
+  .trend-chart .axis-title { fill: var(--text-dim); font-size: 12px;
+                             font-family: var(--font); }
+  .trend-chart .pt { cursor: pointer; }
+  .trend-chart .pt:hover { stroke: var(--text); stroke-width: 2; }
+  .trend-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    margin-top: 12px;
+    font-size: 12px;
+  }
+  .trend-legend .lg { display: inline-flex; align-items: center; gap: 6px;
+                      color: var(--text-dim); }
+  .trend-legend .sw { width: 11px; height: 11px; border-radius: 2px;
+                      flex: 0 0 auto; }
+
   /* ── Form ───────────────────────────────────── */
 
   .field { margin-bottom: 18px; }
@@ -1675,6 +1709,20 @@
         </div>
       </div>
     </div>
+
+    <div class="section">
+      <div class="section-head">
+        Trends
+        <select id="vf-metric" class="trend-metric" onchange="updateTrend()">
+          <option value="">Select a metric…</option>
+        </select>
+      </div>
+      <div class="section-body">
+        <div id="trendHost">
+          <div class="empty">Pick a metric to plot it across runs over time</div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="compare-modal" id="compareModal" onclick="closeCompareModalBg(event)">
@@ -1811,6 +1859,7 @@ async function loadViewRuns(force) {
     _viewFacets = data.facets || _viewFacets;
     _viewLoaded = true;
     populateViewFacets();
+    populateMetricPicker();
     applyViewFilters();
   } catch (e) {
     host.innerHTML = '<div class="empty">Could not load history: '
@@ -1856,6 +1905,8 @@ function applyViewFilters() {
       ? `${_viewRuns.length} run${_viewRuns.length === 1 ? '' : 's'}`
       : `${rows.length} of ${_viewRuns.length} runs`;
   renderViewRuns(rows);
+  _lastViewRows = rows;
+  updateTrend();
 }
 
 function runAnalyses(run) {
@@ -2094,6 +2145,151 @@ function escapeHtml(s) {
   }[c]));
 }
 function escapeAttr(s) { return escapeHtml(s); }
+
+// ── Trends ──────────────────────────────────────
+// Units for the whitelisted key_values, mirroring record.py KEY_VALUE_UNITS.
+const KV_UNITS = {
+  'OCV': 'V', 'V @ 1 A/cm²': 'V', 'HFR': 'Ω·cm²',
+  '|j_xover|': 'mA/cm²', 'Average ECSA': 'm²/g',
+};
+// Distinct hues legible on both dark and light backgrounds.
+const TREND_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6',
+                      '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#84cc16'];
+
+function availableMetrics(runs) {
+  const set = new Set();
+  runs.forEach(r => (r.Data || []).forEach(d =>
+    Object.keys(d.key_values || {}).forEach(k => set.add(k))));
+  // Present whitelisted metrics in a stable, sensible order first.
+  const known = ['OCV', 'V @ 1 A/cm²', 'HFR', '|j_xover|', 'Average ECSA'];
+  const ordered = known.filter(k => set.has(k));
+  Array.from(set).sort().forEach(k => { if (!ordered.includes(k)) ordered.push(k); });
+  return ordered;
+}
+
+function populateMetricPicker() {
+  const sel = document.getElementById('vf-metric');
+  const keep = sel.value;
+  const metrics = availableMetrics(_viewRuns);
+  sel.innerHTML = '<option value="">Select a metric…</option>'
+    + metrics.map(m => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join('');
+  // Preserve selection if still available, else default to the first metric.
+  if (metrics.includes(keep)) sel.value = keep;
+  else if (metrics.length && !keep) sel.value = metrics[0];
+}
+
+// Extract (time, value, sample, step, analysis) points for a metric from the
+// currently-filtered rows.
+function trendPoints(rows, metric) {
+  const pts = [];
+  rows.forEach(r => {
+    const t = Date.parse(r.timestamp || '');
+    if (isNaN(t)) return;
+    (r.Data || []).forEach(d => {
+      const kv = d.key_values || {};
+      if (metric in kv && typeof kv[metric] === 'number') {
+        pts.push({ t, v: kv[metric], sample: r.sample_name || '—',
+                   step: d.step || '', analysis: d.Analysis || '' });
+      }
+    });
+  });
+  return pts;
+}
+
+function updateTrend() {
+  const metric = document.getElementById('vf-metric').value;
+  const host = document.getElementById('trendHost');
+  if (!metric) {
+    host.innerHTML = '<div class="empty">Pick a metric to plot it across runs over time</div>';
+    return;
+  }
+  const pts = trendPoints(_currentViewRows(), metric);
+  if (!pts.length) {
+    host.innerHTML = `<div class="empty">No runs in the current filter have "${escapeHtml(metric)}"</div>`;
+    return;
+  }
+  host.innerHTML = drawTrendChart(pts, metric);
+}
+
+// Rows currently shown in the table, so the trend tracks the filter bar.
+let _lastViewRows = [];
+function _currentViewRows() { return _lastViewRows; }
+
+function drawTrendChart(pts, metric) {
+  const W = 720, H = 320;
+  const m = { l: 58, r: 14, t: 14, b: 42 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const unit = KV_UNITS[metric] || '';
+
+  const ts = pts.map(p => p.t);
+  let tMin = Math.min(...ts), tMax = Math.max(...ts);
+  const vs = pts.map(p => p.v);
+  let vMin = Math.min(...vs), vMax = Math.max(...vs);
+
+  // Pad ranges; guard degenerate (single point / identical values).
+  if (tMin === tMax) { tMin -= 86400000; tMax += 86400000; }
+  const vPad = (vMax - vMin) || Math.max(Math.abs(vMax) * 0.1, 1e-6);
+  vMin -= vPad * 0.12; vMax += vPad * 0.12;
+
+  const xOf = t => m.l + (t - tMin) / (tMax - tMin) * iw;
+  const yOf = v => m.t + (1 - (v - vMin) / (vMax - vMin)) * ih;
+
+  // Colour per sample.
+  const samples = Array.from(new Set(pts.map(p => p.sample)));
+  const colorOf = {};
+  samples.forEach((s, i) => { colorOf[s] = TREND_COLORS[i % TREND_COLORS.length]; });
+
+  // Axes.
+  let svg = `<svg class="trend-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
+  svg += `<line class="axis" x1="${m.l}" y1="${m.t}" x2="${m.l}" y2="${m.t + ih}"/>`;
+  svg += `<line class="axis" x1="${m.l}" y1="${m.t + ih}" x2="${m.l + iw}" y2="${m.t + ih}"/>`;
+
+  // Y ticks.
+  const yTicks = 5;
+  for (let i = 0; i <= yTicks; i++) {
+    const v = vMin + (vMax - vMin) * i / yTicks;
+    const y = yOf(v);
+    svg += `<line class="grid" x1="${m.l}" y1="${y}" x2="${m.l + iw}" y2="${y}"/>`;
+    svg += `<text class="tick-label" x="${m.l - 6}" y="${y + 3}" text-anchor="end">${escapeHtml(fmtNum(v))}</text>`;
+  }
+  // X ticks (dates).
+  const xTicks = Math.min(5, Math.max(2, samples.length + 1));
+  for (let i = 0; i <= xTicks; i++) {
+    const t = tMin + (tMax - tMin) * i / xTicks;
+    const x = xOf(t);
+    const d = new Date(t);
+    const lbl = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+    svg += `<text class="tick-label" x="${x}" y="${m.t + ih + 16}" text-anchor="middle">${lbl}</text>`;
+  }
+  // Y axis title.
+  const yTitle = unit ? `${metric} (${unit})` : metric;
+  svg += `<text class="axis-title" transform="translate(14,${m.t + ih/2}) rotate(-90)" text-anchor="middle">${escapeHtml(yTitle)}</text>`;
+
+  // Lines per sample (only where a sample has 2+ points), sorted by time.
+  samples.forEach(s => {
+    const sp = pts.filter(p => p.sample === s).sort((a, b) => a.t - b.t);
+    if (sp.length < 2) return;
+    const path = sp.map(p => `${xOf(p.t)},${yOf(p.v)}`).join(' ');
+    svg += `<polyline points="${path}" fill="none" stroke="${colorOf[s]}" stroke-width="1.5" opacity="0.7"/>`;
+  });
+
+  // Points, with a native tooltip.
+  pts.forEach(p => {
+    const d = new Date(p.t);
+    const tstr = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')} ${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}`;
+    const stepStr = p.step ? ` (${p.step})` : '';
+    const tip = `${p.sample}${stepStr}\n${metric} = ${fmtNum(p.v)}${unit ? ' ' + unit : ''}\n${tstr}`;
+    svg += `<circle class="pt" cx="${xOf(p.t)}" cy="${yOf(p.v)}" r="3.6" fill="${colorOf[p.sample]}"><title>${escapeHtml(tip)}</title></circle>`;
+  });
+
+  svg += '</svg>';
+
+  // Legend.
+  const legend = samples.map(s =>
+    `<span class="lg"><span class="sw" style="background:${colorOf[s]}"></span>${escapeHtml(s)}</span>`
+  ).join('');
+  return svg + `<div class="trend-legend">${legend}</div>`;
+}
 
 // Cache of last-known job data, keyed by job ID. Used so collapse toggles
 // can re-render without needing a fresh poll fetch.
