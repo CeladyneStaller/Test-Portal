@@ -48,10 +48,15 @@ except ImportError:  # pragma: no cover
     _uerr = None
 
 from scripts.helpers.record import (
+    attach_sidecars,
     build_detail_record,
     build_index_entry,
     detail_bin_name,
     is_comparison_script,
+    load_sidecars,
+    select_sidecars,
+    sidecar_bucket_sizes,
+    sidecar_sizes,
     strip_sidecars,
 )
 
@@ -64,6 +69,15 @@ _JSONBIN_BASE = "https://api.jsonbin.io/v3/b"
 # Sidecars are compressed to stay under it; this is the backstop for runs that
 # still exceed it, and the threshold leaves headroom for headers and framing.
 MAX_BODY_BYTES = int(os.environ.get('JSONBIN_MAX_BODY_BYTES', 900_000))
+
+# Characterizations whose sidecars are not stored. Cleaning CVs carry every
+# point of every cycle across three panels — a single 50-cycle file measured
+# ~242 KB raw — and a qualification run can contain a dozen of them, which on
+# its own exceeds the transport limit. Their metrics and summary are unaffected;
+# only plot re-rendering for that bucket is given up.
+# Override with a comma-separated list, or set empty to store everything.
+_exclude_raw = os.environ.get('JSONBIN_SIDECAR_EXCLUDE', 'cleaning')
+SIDECAR_EXCLUDE_BUCKETS = {b.strip() for b in _exclude_raw.split(',') if b.strip()}
 
 _TIMEOUT_S = 20
 _MAX_RETRIES = 3
@@ -254,7 +268,9 @@ def push_job_metrics(*,
     """
     out: Dict[str, Any] = {'pushed': False, 'reason': None,
                            'bin_id': None, 'n_runs': None,
-                           'body_bytes': None, 'sidecars_omitted': False}
+                           'body_bytes': None, 'sidecars_omitted': False,
+                           'sidecars_kept': 0, 'sidecars_dropped': 0,
+                           'sidecar_bytes_by_bucket': {}}
 
     # Comparison output is derived from runs already stored. Excluded here as
     # well as in record.py so the rule holds regardless of caller.
@@ -270,14 +286,22 @@ def push_job_metrics(*,
     timestamp = (datetime.now(timezone.utc)
                  .isoformat(timespec='seconds').replace('+00:00', 'Z'))
 
+    # Base record first, sidecars attached afterwards. Sidecar selection needs
+    # to know how much of the wire budget the rest of the record consumes.
     try:
         record = build_detail_record(
             job_id=job_id, sample_name=sample_name, script=script,
             timestamp=timestamp, input_files=input_files,
-            output_dir=Path(output_dir), summary=summary)
+            output_dir=Path(output_dir), summary=summary,
+            include_sidecars=False)
+        all_sidecars = load_sidecars(Path(output_dir))
     except Exception as e:
         out['reason'] = f'record assembly failed: {e}'
         return out
+
+    # Report the full breakdown regardless of what is ultimately stored, so the
+    # space consumers are visible from the job record without guesswork.
+    out['sidecar_bytes_by_bucket'] = sidecar_bucket_sizes(all_sidecars)
 
     if extra:
         record['extra'] = extra
@@ -286,19 +310,42 @@ def push_job_metrics(*,
         out['reason'] = 'skipped: no sidecar data found in output'
         return out
 
-    # Size guard. Losing the whole run to a 413 is far worse than losing plot
-    # re-rendering for one heavy run, so an oversized record degrades to
-    # tier 1 — metrics, summary and conditions — rather than failing.
+    # Fit sidecars to the wire budget.
+    #
+    # JSONBin's nginx front end rejects oversized bodies with a 413 before the
+    # request reaches their application, so this has to be enforced client-side.
+    # Two filters: excluded buckets go first, then the smallest of what remains
+    # are kept until the budget runs out. Keeping many light analyses beats
+    # keeping one heavy one, and it degrades smoothly rather than all-or-nothing.
+    base_bytes = len(json.dumps(record, ensure_ascii=False).encode())
+    kept, dropped = select_sidecars(
+        all_sidecars,
+        budget_bytes=max(0, MAX_BODY_BYTES - base_bytes) * 4,  # ~4.9x compression
+        exclude_buckets=SIDECAR_EXCLUDE_BUCKETS)
+
+    attach_sidecars(record, kept)
     body_bytes = len(json.dumps(record, ensure_ascii=False).encode())
-    out['body_bytes'] = body_bytes
-    if body_bytes > MAX_BODY_BYTES:
-        record = strip_sidecars(
-            record,
-            f'record was {body_bytes:,} B, over the {MAX_BODY_BYTES:,} B '
-            f'transport limit')
+
+    # The compression estimate can be optimistic. Trim the largest remaining
+    # sidecar until the real serialized size fits.
+    while body_bytes > MAX_BODY_BYTES and kept:
+        largest = next(iter(sidecar_sizes(kept)))
+        kept.pop(largest)
+        dropped.append(largest)
+        attach_sidecars(record, kept)
         body_bytes = len(json.dumps(record, ensure_ascii=False).encode())
-        out['sidecars_omitted'] = True
-        out['body_bytes'] = body_bytes
+
+    if body_bytes > MAX_BODY_BYTES:
+        # Nothing left to trim: the base record alone is over budget.
+        record = strip_sidecars(
+            record, f'base record alone was {body_bytes:,} B, over the '
+                    f'{MAX_BODY_BYTES:,} B transport limit')
+        body_bytes = len(json.dumps(record, ensure_ascii=False).encode())
+
+    out['body_bytes'] = body_bytes
+    out['sidecars_kept'] = len(kept)
+    out['sidecars_dropped'] = len(dropped)
+    out['sidecars_omitted'] = bool(dropped)
 
     try:
         bin_id = create_detail_bin(
@@ -325,7 +372,10 @@ def push_job_metrics(*,
         return out
 
     out['pushed'] = True
-    if out['sidecars_omitted']:
-        out['reason'] = ('pushed without sidecars — record exceeded the '
-                         'transport limit; metrics and summary are intact')
+    if out['sidecars_dropped']:
+        out['reason'] = (
+            f"pushed with {out['sidecars_kept']} of "
+            f"{out['sidecars_kept'] + out['sidecars_dropped']} sidecars — "
+            f"the rest were excluded by bucket or did not fit the transport "
+            f"limit; metrics and summary are intact")
     return out

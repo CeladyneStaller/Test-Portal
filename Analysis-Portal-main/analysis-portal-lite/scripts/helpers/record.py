@@ -23,7 +23,7 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 SCHEMA_VERSION = 2
 
@@ -71,6 +71,23 @@ def decode_sidecars(record: Dict[str, Any]) -> Dict[str, Any]:
     return json.loads(raw.decode('utf-8'))
 
 
+def attach_sidecars(record: Dict[str, Any], sidecars: Dict[str, Any],
+                    compress: bool = True) -> Dict[str, Any]:
+    """Attach a chosen sidecar set to an already-built record, in place.
+
+    Kept separate from build_detail_record so the transport can decide which
+    sidecars fit the wire budget before committing them — the base record has
+    to be measured first to know how much room is left.
+    """
+    if not sidecars:
+        record.pop('sidecars', None)
+        record.pop('sidecar_bytes_by_bucket', None)
+        return record
+    record['sidecars'] = encode_sidecars(sidecars) if compress else sidecars
+    record['sidecar_bytes_by_bucket'] = sidecar_bucket_sizes(sidecars)
+    return record
+
+
 def strip_sidecars(record: Dict[str, Any], reason: str) -> Dict[str, Any]:
     """Return a copy without sidecars, marked so the loss is visible.
 
@@ -81,6 +98,70 @@ def strip_sidecars(record: Dict[str, Any], reason: str) -> Dict[str, Any]:
     out = {k: v for k, v in record.items() if k != 'sidecars'}
     out['sidecars_omitted'] = reason
     return out
+
+
+def sidecar_sizes(sidecars: Dict[str, Any]) -> Dict[str, int]:
+    """Serialized byte cost of each sidecar, largest first."""
+    sizes = {
+        name: len(json.dumps(sc, ensure_ascii=False,
+                             separators=(',', ':')).encode())
+        for name, sc in sidecars.items()
+    }
+    return dict(sorted(sizes.items(), key=lambda kv: kv[1], reverse=True))
+
+
+def sidecar_bucket_sizes(sidecars: Dict[str, Any]) -> Dict[str, int]:
+    """Serialized byte cost per characterization bucket, largest first.
+
+    Reported on every push so the space consumers are visible from the job
+    record rather than inferred.
+    """
+    per_bucket: Dict[str, int] = {}
+    for name, sc in sidecars.items():
+        bucket = plot_bucket(sc.get('plot_type', 'unknown'))
+        n = len(json.dumps(sc, ensure_ascii=False,
+                           separators=(',', ':')).encode())
+        per_bucket[bucket] = per_bucket.get(bucket, 0) + n
+    return dict(sorted(per_bucket.items(), key=lambda kv: kv[1], reverse=True))
+
+
+def select_sidecars(sidecars: Dict[str, Any], budget_bytes: int,
+                    exclude_buckets: Optional[Set[str]] = None
+                    ) -> Tuple[Dict[str, Any], List[str]]:
+    """Choose which sidecars to keep within a raw-byte budget.
+
+    Two filters, applied in order:
+
+    1. Bucket exclusion — whole characterizations dropped by configuration,
+       for cases where their plots are known to be large and not worth storing.
+    2. Size-ranked retention — of what remains, the smallest are kept first
+       until the budget is exhausted. Keeping several light analyses is more
+       useful than one heavy one, and it degrades smoothly instead of the
+       all-or-nothing choice of dropping every sidecar.
+
+    Returns (kept, dropped_names).
+    """
+    exclude = exclude_buckets or set()
+    dropped: List[str] = []
+    candidates: Dict[str, Any] = {}
+
+    for name, sc in sidecars.items():
+        if plot_bucket(sc.get('plot_type', 'unknown')) in exclude:
+            dropped.append(name)
+        else:
+            candidates[name] = sc
+
+    # Smallest first, so a budget buys the most plots.
+    ordered = sorted(sidecar_sizes(candidates).items(), key=lambda kv: kv[1])
+    kept: Dict[str, Any] = {}
+    used = 0
+    for name, size in ordered:
+        if used + size <= budget_bytes:
+            kept[name] = candidates[name]
+            used += size
+        else:
+            dropped.append(name)
+    return kept, dropped
 
 # ─────────────────────────────────────────────────────────────────────
 #  Comparison exclusion
@@ -504,6 +585,9 @@ def build_detail_record(*, job_id: str, sample_name: Optional[str], script: str,
     if include_sidecars and sidecars:
         record['sidecars'] = (encode_sidecars(sidecars) if compress_sidecars
                               else sidecars)
+        # Per-bucket accounting travels with the record so the space consumers
+        # are visible without having to decompress and re-measure.
+        record['sidecar_bytes_by_bucket'] = sidecar_bucket_sizes(sidecars)
     return record
 
 
