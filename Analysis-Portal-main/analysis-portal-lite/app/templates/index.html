@@ -314,6 +314,31 @@
     padding-bottom: 5px;
     border-bottom: 1px solid var(--border);
   }
+  .rd-analysis-head.collapsible {
+    cursor: pointer;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    user-select: none;
+  }
+  .rd-analysis-head.collapsible:hover { color: var(--text); }
+  .rd-analysis-head .rd-caret {
+    font-size: 10px;
+    transition: transform 0.15s;
+    color: var(--text-dim);
+  }
+  .rd-analysis.open .rd-analysis-head .rd-caret { transform: rotate(90deg); }
+  .rd-analysis-head .rd-nostore-note {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-left: auto;
+  }
+  .rd-analysis-body { display: none; }
+  .rd-analysis.open .rd-analysis-body { display: block; }
+  .rd-analysis.always-open .rd-analysis-body { display: block; }
   .rd-plot {
     display: flex;
     gap: 14px;
@@ -2091,41 +2116,30 @@ function renderRunDetail(detail) {
   let html = '<div class="run-detail">';
 
   Object.keys(byBucket).sort().forEach(bucket => {
-    html += `<div class="rd-analysis">
-      <div class="rd-analysis-head">${escapeHtml(bucket)}</div>`;
-    byBucket[bucket].forEach(p => {
-      const condStr = Object.entries(p.conditions || {})
-        .map(([k, v]) => `${escapeHtml(k)} ${escapeHtml(fmtNum(v))}`).join(' · ');
-      const valStr = Object.entries(p.values || {}).map(([k, v]) =>
-        `<span class="rd-val">${escapeHtml(k)} <b>${escapeHtml(fmtVal(v))}</b></span>`
-      ).join('');
+    const bucketPlots = byBucket[bucket];
+    const anyRenderable = bucketPlots.some(p => p.renderable);
 
-      const thumb = p.renderable
-        ? `<div class="rd-thumb" data-plot="${escapeAttr(p.plot)}"
-                onclick="openHistoricalPlot('${escapeAttr(detail.job_id)}','${escapeAttr(p.plot)}')">
-             <span class="thumb-spin">loading…</span></div>`
-        : `<div class="rd-thumb unrenderable" title="Sidecar not stored for this plot">
-             plot data<br>not stored</div>`;
+    const bodyHtml = bucketPlots.map(p =>
+      rdPlotRow(detail, p, anyRenderable)).join('');
 
-      const selKey = detail.job_id + '::' + p.plot;
-      const selBtn = p.renderable
-        ? `<button class="rd-select ${_viewCompareSel.has(selKey) ? 'on' : ''}"
-                   data-selkey="${escapeAttr(selKey)}"
-                   onclick="toggleViewCompare('${escapeAttr(detail.job_id)}','${escapeAttr(p.plot)}','${escapeAttr(detail.sample_name || '')}')">
-             ${_viewCompareSel.has(selKey) ? '✓ Selected' : 'Select to compare'}</button>`
-        : '';
-
-      html += `<div class="rd-plot">
-        ${thumb}
-        <div class="rd-plot-body">
-          <div class="rd-plot-name">${escapeHtml(p.plot)}</div>
-          ${condStr ? `<div class="rd-conditions">${condStr}</div>` : ''}
-          <div class="rd-values">${valStr || '<span class="rd-val">—</span>'}</div>
-          ${selBtn}
-        </div>
+    if (anyRenderable) {
+      // Normal, always-expanded analysis with plots.
+      html += `<div class="rd-analysis always-open">
+        <div class="rd-analysis-head">${escapeHtml(bucket)}</div>
+        <div class="rd-analysis-body">${bodyHtml}</div>
       </div>`;
-    });
-    html += '</div>';
+    } else {
+      // No sidecars stored for this analysis (e.g. cleaning). Collapse it by
+      // default and say so — the key values are still there on expand.
+      html += `<div class="rd-analysis" data-bucket="${escapeAttr(bucket)}">
+        <div class="rd-analysis-head collapsible" onclick="toggleRdAnalysis(this)">
+          <span class="rd-caret">▶</span>
+          <span>${escapeHtml(bucket)}</span>
+          <span class="rd-nostore-note">Plot data not stored — expand for key values only</span>
+        </div>
+        <div class="rd-analysis-body">${bodyHtml}</div>
+      </div>`;
+    }
   });
 
   // Tier 1 summary block, if present.
@@ -2146,6 +2160,51 @@ function renderRunDetail(detail) {
 
   html += '</div>';
   return html;
+}
+
+// One plot row. When the whole analysis has no stored sidecars, the redundant
+// "plot data not stored" thumbnail box is dropped — the analysis header already
+// says so — leaving just the plot's conditions and key values.
+function rdPlotRow(detail, p, bucketHasPlots) {
+  const condStr = Object.entries(p.conditions || {})
+    .map(([k, v]) => `${escapeHtml(k)} ${escapeHtml(fmtNum(v))}`).join(' · ');
+  const valStr = Object.entries(p.values || {}).map(([k, v]) =>
+    `<span class="rd-val">${escapeHtml(k)} <b>${escapeHtml(fmtVal(v))}</b></span>`
+  ).join('');
+
+  let thumb = '';
+  if (p.renderable) {
+    thumb = `<div class="rd-thumb" data-plot="${escapeAttr(p.plot)}"
+                  onclick="openHistoricalPlot('${escapeAttr(detail.job_id)}','${escapeAttr(p.plot)}')">
+               <span class="thumb-spin">loading…</span></div>`;
+  } else if (bucketHasPlots) {
+    // Mixed bucket: some plots renderable, this one not — keep the marker so
+    // the row lines up with its siblings.
+    thumb = `<div class="rd-thumb unrenderable" title="Sidecar not stored for this plot">
+               plot data<br>not stored</div>`;
+  }
+
+  const selKey = detail.job_id + '::' + p.plot;
+  const selBtn = p.renderable
+    ? `<button class="rd-select ${_viewCompareSel.has(selKey) ? 'on' : ''}"
+               data-selkey="${escapeAttr(selKey)}"
+               onclick="toggleViewCompare('${escapeAttr(detail.job_id)}','${escapeAttr(p.plot)}','${escapeAttr(detail.sample_name || '')}')">
+         ${_viewCompareSel.has(selKey) ? '✓ Selected' : 'Select to compare'}</button>`
+    : '';
+
+  return `<div class="rd-plot">
+    ${thumb}
+    <div class="rd-plot-body">
+      <div class="rd-plot-name">${escapeHtml(p.plot)}</div>
+      ${condStr ? `<div class="rd-conditions">${condStr}</div>` : ''}
+      <div class="rd-values">${valStr || '<span class="rd-val">—</span>'}</div>
+      ${selBtn}
+    </div>
+  </div>`;
+}
+
+function toggleRdAnalysis(headEl) {
+  headEl.parentElement.classList.toggle('open');
 }
 
 // Fetch each renderable plot's PNG and drop it into its thumbnail.
