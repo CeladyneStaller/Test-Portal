@@ -334,11 +334,42 @@
     font-weight: 400;
     font-size: 11px;
     color: var(--text-dim);
-    margin-left: auto;
   }
+  .rd-head-spacer { margin-left: auto; }
   .rd-analysis-body { display: none; }
   .rd-analysis.open .rd-analysis-body { display: block; }
-  .rd-analysis.always-open .rd-analysis-body { display: block; }
+
+  .rd-toolbar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+  }
+  .rd-tool-btn {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    border-radius: var(--radius);
+    padding: 5px 12px;
+    font-family: var(--font);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .rd-tool-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .rd-tool-btn.rd-selall { color: var(--accent); border-color: var(--accent-strong); }
+  .rd-type-selall {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    border-radius: var(--radius);
+    padding: 2px 9px;
+    font-family: var(--font);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .rd-type-selall:hover { border-color: var(--accent); color: var(--accent); }
   .rd-plot {
     display: flex;
     gap: 14px;
@@ -2113,33 +2144,53 @@ function renderRunDetail(detail) {
   const byBucket = {};
   plots.forEach(p => { (byBucket[p.analysis] = byBucket[p.analysis] || []).push(p); });
 
+  const jobId = detail.job_id;
+  const allRenderable = plots.filter(p => p.renderable).map(p => p.plot);
+
   let html = '<div class="run-detail">';
+
+  // Run-level toolbar: collapse/expand every analysis, and select every
+  // renderable plot in the whole sample (mirrors the Jobs tab's batch select).
+  html += `<div class="rd-toolbar">
+    <button class="rd-tool-btn" onclick="toggleAllRdAnalyses('${escapeAttr(jobId)}')"
+            data-job="${escapeAttr(jobId)}">Collapse all</button>`;
+  if (allRenderable.length) {
+    html += `<button class="rd-tool-btn rd-selall"
+                     onclick="selectAllRdPlots('${escapeAttr(jobId)}', ${plotsAttr(allRenderable)})"
+                     data-scope="run">Select all plots (${allRenderable.length})</button>`;
+  }
+  html += `</div>`;
 
   Object.keys(byBucket).sort().forEach(bucket => {
     const bucketPlots = byBucket[bucket];
     const anyRenderable = bucketPlots.some(p => p.renderable);
+    const renderableInBucket = bucketPlots.filter(p => p.renderable).map(p => p.plot);
 
     const bodyHtml = bucketPlots.map(p =>
       rdPlotRow(detail, p, anyRenderable)).join('');
 
-    if (anyRenderable) {
-      // Normal, always-expanded analysis with plots.
-      html += `<div class="rd-analysis always-open">
-        <div class="rd-analysis-head">${escapeHtml(bucket)}</div>
-        <div class="rd-analysis-body">${bodyHtml}</div>
-      </div>`;
-    } else {
-      // No sidecars stored for this analysis (e.g. cleaning). Collapse it by
-      // default and say so — the key values are still there on expand.
-      html += `<div class="rd-analysis" data-bucket="${escapeAttr(bucket)}">
-        <div class="rd-analysis-head collapsible" onclick="toggleRdAnalysis(this)">
-          <span class="rd-caret">▶</span>
-          <span>${escapeHtml(bucket)}</span>
-          <span class="rd-nostore-note">Plot data not stored — expand for key values only</span>
-        </div>
-        <div class="rd-analysis-body">${bodyHtml}</div>
-      </div>`;
-    }
+    // Every analysis is collapsible now. Buckets with plots start open;
+    // buckets with no stored plot data start collapsed.
+    const openClass = anyRenderable ? ' open' : '';
+    const note = anyRenderable ? ''
+      : `<span class="rd-nostore-note">Plot data not stored — expand for key values only</span>`;
+    // Per-type "select all" for this analysis, when it has renderable plots.
+    const typeSelAll = renderableInBucket.length > 1
+      ? `<button class="rd-type-selall"
+                 onclick="event.stopPropagation(); selectAllRdPlots('${escapeAttr(jobId)}', ${plotsAttr(renderableInBucket)})">
+           Select all ${renderableInBucket.length}</button>`
+      : '';
+
+    html += `<div class="rd-analysis${openClass}" data-bucket="${escapeAttr(bucket)}">
+      <div class="rd-analysis-head collapsible" onclick="toggleRdAnalysis(this)">
+        <span class="rd-caret">▶</span>
+        <span>${escapeHtml(bucket)}</span>
+        <span class="rd-head-spacer"></span>
+        ${note}
+        ${typeSelAll}
+      </div>
+      <div class="rd-analysis-body">${bodyHtml}</div>
+    </div>`;
   });
 
   // Tier 1 summary block, if present.
@@ -2160,6 +2211,14 @@ function renderRunDetail(detail) {
 
   html += '</div>';
   return html;
+}
+
+// Encode a plot-name list for an inline onclick attribute safely.
+function plotsAttr(names) {
+  return "'" + encodeURIComponent(JSON.stringify(names)) + "'";
+}
+function plotsFromAttr(s) {
+  return JSON.parse(decodeURIComponent(s));
 }
 
 // One plot row. When the whole analysis has no stored sidecars, the redundant
@@ -2205,6 +2264,41 @@ function rdPlotRow(detail, p, bucketHasPlots) {
 
 function toggleRdAnalysis(headEl) {
   headEl.parentElement.classList.toggle('open');
+}
+
+// Collapse or expand every analysis section in a run's detail. Toggles based on
+// current state, mirroring the Jobs tab's Collapse-All.
+function toggleAllRdAnalyses(jobId) {
+  const dr = document.querySelector(`tr.detail-row[data-job="${cssEscape(jobId)}"]`);
+  if (!dr) return;
+  const sections = dr.querySelectorAll('.rd-analysis');
+  const anyOpen = Array.from(sections).some(s => s.classList.contains('open'));
+  sections.forEach(s => s.classList.toggle('open', !anyOpen));
+  const btn = dr.querySelector(`.rd-tool-btn[data-job="${cssEscape(jobId)}"]`);
+  if (btn) btn.textContent = anyOpen ? 'Expand all' : 'Collapse all';
+}
+
+// Select (or deselect) every renderable plot in a scope — the whole run, or one
+// analysis type. Toggle-on style: if all are already selected, this deselects.
+function selectAllRdPlots(jobId, plotsEncoded) {
+  const plots = plotsFromAttr(plotsEncoded);
+  const detail = _detailCache[jobId] || {};
+  const sample = detail.sample_name || '';
+  const allSelected = plots.every(pl => _viewCompareSel.has(jobId + '::' + pl));
+
+  plots.forEach(pl => {
+    const key = jobId + '::' + pl;
+    if (allSelected) _viewCompareSel.delete(key);
+    else _viewCompareSel.set(key, { job_id: jobId, plot: pl, sample_name: sample });
+    // Reflect on the per-plot button if it's on screen.
+    const btn = document.querySelector(`.rd-select[data-selkey="${cssEscape(key)}"]`);
+    if (btn) {
+      const on = _viewCompareSel.has(key);
+      btn.classList.toggle('on', on);
+      btn.textContent = on ? '✓ Selected' : 'Select to compare';
+    }
+  });
+  updateViewCompareBar();
 }
 
 // Fetch each renderable plot's PNG and drop it into its thumbnail.
