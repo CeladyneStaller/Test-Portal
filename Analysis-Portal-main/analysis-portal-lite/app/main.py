@@ -297,6 +297,172 @@ async def list_scripts():
     }
 
 
+# ═══════════════════════════════════════════════════════════════════
+# View tab — read-only access to the JSONBin store
+# ═══════════════════════════════════════════════════════════════════
+
+@app.get("/api/view/runs")
+async def view_runs(sample: str = Query(None), script: str = Query(None),
+                    analysis: str = Query(None), since: str = Query(None),
+                    until: str = Query(None), limit: int = Query(None)):
+    """Filtered list of historical runs from the index bin."""
+    from scripts.helpers import viewstore
+    try:
+        return viewstore.list_runs(sample=sample, script=script,
+                                   analysis=analysis, since=since,
+                                   until=until, limit=limit)
+    except Exception as e:
+        raise HTTPException(502, f"could not read index: {e}")
+
+
+@app.get("/api/view/runs/{job_id}")
+async def view_run_detail(job_id: str):
+    """One run's detail bin: full metrics, summary, and plot inventory.
+
+    The compressed sidecar blob is dropped from the response — it can be tens of
+    KB and the browser never consumes it directly. The plot inventory reports
+    which plots are renderable via /api/view/render instead.
+    """
+    from scripts.helpers import viewstore
+    try:
+        detail = viewstore.fetch_detail(job_id)
+    except KeyError:
+        raise HTTPException(404, f"no run with job_id {job_id}")
+    except Exception as e:
+        raise HTTPException(502, f"could not read detail bin: {e}")
+    slim = {k: v for k, v in detail.items() if k != 'sidecars'}
+    slim['plots'] = viewstore.run_plots(job_id)
+    return slim
+
+
+@app.post("/api/view/render")
+async def view_render(payload: dict):
+    """Re-render one historical plot from its stored sidecar → PNG.
+
+    Server-side matplotlib (fork A): reuses the comparison renderer so the output
+    matches the Analysis tab exactly. A single-item overlay is just the plot.
+    """
+    from scripts.helpers import viewstore
+    from scripts.helpers.plot_compare import render_overlay_comparison, load_sidecar
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    job_id = payload.get('job_id')
+    plot = payload.get('plot')
+    if not job_id or not plot:
+        raise HTTPException(400, "job_id and plot are required")
+
+    render_dir = JOBS_DIR / f"view-render-{uuid.uuid4().hex[:8]}"
+    try:
+        written = viewstore.materialize_sidecars(job_id, render_dir, plots=[plot])
+        if not written:
+            raise HTTPException(
+                404, f"plot {plot!r} has no stored sidecar (cleaning plots are "
+                     f"not stored; its metrics remain available)")
+        sidecar_path = render_dir / '_plot_data' / f'{plot}.json'
+        item = {'label': plot, 'sidecar': load_sidecar(str(sidecar_path)),
+                'filename': f'{plot}.png'}
+        out_png = render_dir / f'{plot}.png'
+        fig = render_overlay_comparison([item], save_path=str(out_png),
+                                        title=plot)
+        if fig:
+            plt.close(fig)
+        if not out_png.exists():
+            raise HTTPException(500, "render produced no output")
+        return FileResponse(str(out_png), media_type="image/png",
+                            filename=f'{plot}.png')
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"render failed: {e}")
+    finally:
+        # The PNG is streamed from disk by FileResponse before this runs on
+        # older Starlette, so only prune the sidecar temp, not the image.
+        shutil.rmtree(render_dir / '_plot_data', ignore_errors=True)
+
+
+@app.post("/api/view/compare")
+async def view_compare(payload: dict):
+    """Run a comparison across historical runs.
+
+    Stages the selected runs' sidecars to disk, then goes through the same
+    executor and job lifecycle as a live comparison — so results land in the
+    Jobs list with the existing download, lightbox and compare machinery, and
+    historical plots can be mixed with current ones.
+    """
+    import json as _json
+    from scripts.helpers import viewstore
+
+    selections = payload.get('selections') or []
+    if len(selections) < 2:
+        raise HTTPException(400, "at least two selections are required")
+    grouping_mode = payload.get('grouping_mode', 'plot_type')
+    title = payload.get('title', '')
+    image_format = payload.get('image_format', 'png')
+
+    job_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-vcmp-" + uuid.uuid4().hex[:6]
+    input_dir = JOBS_DIR / job_id / "input"
+    output_dir = JOBS_DIR / job_id / "output"
+    input_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True)
+
+    # Stage sidecars into per-source directories under this job's input.
+    try:
+        sources = viewstore.materialize_for_compare(selections, input_dir)
+    except Exception as e:
+        shutil.rmtree(JOBS_DIR / job_id, ignore_errors=True)
+        raise HTTPException(502, f"could not stage historical sidecars: {e}")
+    if len(sources) < 2:
+        shutil.rmtree(JOBS_DIR / job_id, ignore_errors=True)
+        raise HTTPException(
+            400, "fewer than two selections had stored sidecars — cleaning "
+                 "plots cannot be compared from history")
+
+    samples = []
+    for s in sources:
+        nm = s.get('sample_name') or s['job_id']
+        if nm not in samples:
+            samples.append(nm)
+    sanitized = '_'.join(''.join(c for c in s if c.isalnum() or c in '-_')
+                         for s in samples)[:80] or 'Comparison'
+
+    user_params = {
+        'sources': _json.dumps(sources),
+        'image_format': image_format,
+        'title': title or f"Historical Comparison ({len(sources)} plots)",
+        'sample_name': sanitized,
+        'grouping_mode': grouping_mode,
+    }
+
+    with jobs_lock:
+        jobs[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "message": "Running historical comparison...",
+            "script": "Plot Comparison",
+            "input_files": [f"{s['sample_name']} / {s['filename']}"
+                            for s in sources],
+            "submitted_at": datetime.now().isoformat(),
+            "is_comparison": True,
+            "source_jobs": [s['job_id'] for s in sources],
+        }
+
+    future = executor.submit(
+        _run_job, job_id, "Plot Comparison", str(input_dir), str(output_dir),
+        user_params)
+    future.add_done_callback(lambda f: _on_job_done(job_id, f))
+
+    return {"job_id": job_id, "status": "running", "n_sources": len(sources)}
+
+
+@app.get("/api/view/cache")
+async def view_cache():
+    """Cache diagnostics for the view store."""
+    from scripts.helpers import viewstore
+    return viewstore.cache_stats()
+
+
 @app.post("/api/upload")
 async def upload_and_run(
     script: str = Form(...),
