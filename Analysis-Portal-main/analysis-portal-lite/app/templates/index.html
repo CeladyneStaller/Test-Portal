@@ -407,6 +407,63 @@
   .trend-legend .sw { width: 11px; height: 11px; border-radius: 2px;
                       flex: 0 0 auto; }
 
+  /* ─── View tab: compare selection ─────────── */
+  .rd-select {
+    margin-top: 8px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    border-radius: var(--radius);
+    padding: 4px 10px;
+    font-family: var(--font);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .rd-select:hover { border-color: var(--accent); color: var(--accent); }
+  .rd-select.on {
+    background: var(--accent-strong);
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 500;
+  }
+  .view-compare-bar {
+    position: sticky;
+    bottom: 0;
+    display: none;
+    align-items: center;
+    gap: 12px;
+    margin-top: 16px;
+    padding: 12px 16px;
+    background: var(--surface-raised);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    box-shadow: 0 -2px 12px rgba(0,0,0,0.15);
+  }
+  .view-compare-bar.show { display: flex; }
+  .view-compare-bar .vcb-count { color: var(--text); font-weight: 500;
+                                 font-size: 14px; }
+  .view-compare-bar .vcb-spacer { margin-left: auto; }
+  .view-compare-bar button {
+    border-radius: var(--radius);
+    padding: 8px 16px;
+    font-family: var(--font);
+    font-size: 13px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+  }
+  .view-compare-bar .vcb-clear { background: var(--surface);
+                                 color: var(--text-dim); }
+  .view-compare-bar .vcb-clear:hover { border-color: var(--red);
+                                       color: var(--red); }
+  .view-compare-bar .vcb-go {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+    font-weight: 500;
+  }
+  .view-compare-bar .vcb-go:disabled { opacity: 0.5; cursor: not-allowed; }
+
   /* ── Form ───────────────────────────────────── */
 
   .field { margin-bottom: 18px; }
@@ -1723,6 +1780,15 @@
         </div>
       </div>
     </div>
+
+    <div class="view-compare-bar" id="viewCompareBar">
+      <span class="vcb-count"><span id="vcbCount">0</span> plots selected to compare</span>
+      <div class="vcb-spacer"></div>
+      <button class="vcb-clear" onclick="clearViewCompare()">Clear</button>
+      <button class="vcb-go" id="vcbGo" onclick="openViewCompareModal()">
+        Compare Historical
+      </button>
+    </div>
   </div>
 
   <div class="compare-modal" id="compareModal" onclick="closeCompareModalBg(event)">
@@ -2041,12 +2107,21 @@ function renderRunDetail(detail) {
         : `<div class="rd-thumb unrenderable" title="Sidecar not stored for this plot">
              plot data<br>not stored</div>`;
 
+      const selKey = detail.job_id + '::' + p.plot;
+      const selBtn = p.renderable
+        ? `<button class="rd-select ${_viewCompareSel.has(selKey) ? 'on' : ''}"
+                   data-selkey="${escapeAttr(selKey)}"
+                   onclick="toggleViewCompare('${escapeAttr(detail.job_id)}','${escapeAttr(p.plot)}','${escapeAttr(detail.sample_name || '')}')">
+             ${_viewCompareSel.has(selKey) ? '✓ Selected' : 'Select to compare'}</button>`
+        : '';
+
       html += `<div class="rd-plot">
         ${thumb}
         <div class="rd-plot-body">
           <div class="rd-plot-name">${escapeHtml(p.plot)}</div>
           ${condStr ? `<div class="rd-conditions">${condStr}</div>` : ''}
           <div class="rd-values">${valStr || '<span class="rd-val">—</span>'}</div>
+          ${selBtn}
         </div>
       </div>`;
     });
@@ -2137,6 +2212,135 @@ function fmtVal(v) {
 function cssEscape(s) {
   if (window.CSS && CSS.escape) return CSS.escape(s);
   return String(s).replace(/["\\\]]/g, '\\$&');
+}
+
+// ── Historical comparison selection ─────────────
+// Parallel to the live compareSelections map, keyed "job_id::plot".
+const _viewCompareSel = new Map();  // key → {job_id, plot, sample_name}
+
+function toggleViewCompare(jobId, plot, sample) {
+  const key = jobId + '::' + plot;
+  if (_viewCompareSel.has(key)) _viewCompareSel.delete(key);
+  else _viewCompareSel.set(key, { job_id: jobId, plot, sample_name: sample });
+
+  // Reflect state on the button that was clicked.
+  const btn = document.querySelector(`.rd-select[data-selkey="${cssEscape(key)}"]`);
+  if (btn) {
+    const on = _viewCompareSel.has(key);
+    btn.classList.toggle('on', on);
+    btn.textContent = on ? '✓ Selected' : 'Select to compare';
+  }
+  updateViewCompareBar();
+}
+
+function updateViewCompareBar() {
+  const bar = document.getElementById('viewCompareBar');
+  document.getElementById('vcbCount').textContent = _viewCompareSel.size;
+  bar.classList.toggle('show', _viewCompareSel.size > 0);
+  document.getElementById('vcbGo').disabled = _viewCompareSel.size < 2;
+}
+
+function clearViewCompare() {
+  _viewCompareSel.clear();
+  document.querySelectorAll('.rd-select.on').forEach(b => {
+    b.classList.remove('on');
+    b.textContent = 'Select to compare';
+  });
+  updateViewCompareBar();
+}
+
+// Reuse the existing compare modal in historical mode.
+let _compareMode = 'live';   // 'live' | 'historical'
+
+function openViewCompareModal() {
+  if (_viewCompareSel.size < 2) {
+    alert('Select at least 2 plots to compare.');
+    return;
+  }
+  _compareMode = 'historical';
+  const wrap = document.getElementById('compareSamples');
+  wrap.innerHTML = '';
+  _viewCompareSel.forEach((s, key) => {
+    const row = document.createElement('div');
+    row.className = 'sample-row';
+    row.dataset.key = key;
+    const placeholder = `auto: ${s.sample_name}…  (leave blank for clean default)`;
+    row.innerHTML = `
+      <span class="job-name">${esc(s.plot)}<br><span style="color:#bbb">${esc(s.sample_name)}</span></span>
+      <input type="text" value="" placeholder="${esc(placeholder)}">
+      <button class="remove-btn" onclick="removeViewCompareSample('${esc(key)}')">Remove</button>`;
+    wrap.appendChild(row);
+  });
+  document.getElementById('compareErr').style.display = 'none';
+  document.getElementById('compareModal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function removeViewCompareSample(key) {
+  _viewCompareSel.delete(key);
+  const btn = document.querySelector(`.rd-select[data-selkey="${cssEscape(key)}"]`);
+  if (btn) { btn.classList.remove('on'); btn.textContent = 'Select to compare'; }
+  updateViewCompareBar();
+  if (_viewCompareSel.size < 2) closeCompareModal();
+  else openViewCompareModal();
+}
+
+async function submitViewComparison(groupingMode) {
+  const errEl = document.getElementById('compareErr');
+  errEl.style.display = 'none';
+
+  const selections = [];
+  document.querySelectorAll('#compareSamples .sample-row').forEach(row => {
+    const sel = _viewCompareSel.get(row.dataset.key);
+    if (!sel) return;
+    selections.push({
+      job_id: sel.job_id,
+      plot: sel.plot,
+      label: row.querySelector('input[type=text]').value.trim(),
+    });
+  });
+  if (selections.length < 2) {
+    errEl.textContent = 'Need at least 2 sources.';
+    errEl.className = 'err'; errEl.style.display = 'block';
+    return;
+  }
+
+  const title = document.getElementById('compareTitle').value.trim();
+  const btnAll = document.getElementById('compareGoBtnAll');
+  const btnCond = document.getElementById('compareGoBtnConditions');
+  if (btnAll) btnAll.disabled = true;
+  if (btnCond) btnCond.disabled = true;
+
+  try {
+    const r = await fetch('/api/view/compare', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        selections, title, grouping_mode: groupingMode, image_format: 'png' })
+    });
+    if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
+    const d = await r.json();
+    // Clear selection and surface the job before rendering, so a rendering
+    // hiccup can't strand the modal open or leave selections behind. The
+    // comparison result lands in the Jobs list (fork B).
+    clearViewCompare();
+    closeCompareModal();
+    switchTab('analysis');
+    try { saveJobId(d.job_id); } catch (_) { /* persistence optional */ }
+    renderJob(d.job_id, {
+      status: 'running',
+      message: `Generating historical comparison from ${d.n_sources} plots...`,
+      script: 'Plot Comparison',
+      input_files: selections.map(s => `${s.label || s.plot}`),
+    });
+    pollJob(d.job_id);
+  } catch (e) {
+    errEl.textContent = 'Comparison failed: ' + (e.message || e);
+    errEl.className = 'err'; errEl.style.display = 'block';
+  } finally {
+    if (btnAll) btnAll.disabled = false;
+    if (btnCond) btnCond.disabled = false;
+  }
 }
 
 function escapeHtml(s) {
@@ -3289,6 +3493,7 @@ function openCompareModal() {
     alert('Select at least 2 plots to compare.');
     return;
   }
+  _compareMode = 'live';
   const wrap = document.getElementById('compareSamples');
   wrap.innerHTML = '';
   compareSelections.forEach((s, key) => {
@@ -3351,6 +3556,11 @@ function removeCompareSample(key) {
 
 async function submitComparison(groupingMode) {
   groupingMode = groupingMode || 'plot_type';
+  // Historical selections route through the view-compare endpoint, which
+  // stages their sidecars before running the same comparison script.
+  if (_compareMode === 'historical') {
+    return submitViewComparison(groupingMode);
+  }
   const errEl = document.getElementById('compareErr');
   errEl.style.display = 'none';
 
