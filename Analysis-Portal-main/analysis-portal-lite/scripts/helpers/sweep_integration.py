@@ -190,18 +190,30 @@ for script_name, module, short, make_input, bucket, want_kv in CASES:
     if not push['pushed']:
         continue
 
-    detail = cap.calls[0][1]
-    entry = cap.calls[2][1]['runs'][0]
+    # The index is read first for the sample lookup, so locate calls by method
+    # rather than position.
+    detail = next(b for m_, b, _ in cap.calls if m_ == 'POST')
+    entry = next(b for m_, b, _ in cap.calls if m_ == 'PUT')['runs'][0]
     idx_b = len(json.dumps(entry, ensure_ascii=False).encode())
     det_b = len(json.dumps(detail, ensure_ascii=False).encode())
 
     check(f'{script_name} schema 2', detail.get('schema') == 2)
-    check(f'{script_name} sidecars embedded', 'sidecars' in detail)
+    # Sidecars are stored unless the bucket is excluded by configuration.
+    # Cleaning is excluded by default — its CV plots dominate the wire budget.
+    excluded = bucket in jsonbin.SIDECAR_EXCLUDE_BUCKETS
+    if excluded:
+        check(f'{script_name} sidecars deliberately excluded',
+              'sidecars' not in detail)
+        check(f'{script_name} exclusion still reports bucket bytes',
+              bucket in push.get('sidecar_bytes_by_bucket', {}))
+    else:
+        check(f'{script_name} sidecars embedded', 'sidecars' in detail)
     check(f'{script_name} summary embedded', 'summary' in detail)
     check(f'{script_name} bucket {bucket}', bucket in detail['metrics'],
           f"(got {list(detail['metrics'])})")
     check(f'{script_name} entry has Data', len(entry['Data']) >= 1)
-    check(f'{script_name} bin name', cap.calls[0][2].get('X-Bin-Name', '')
+    post_hdrs = next(h for m_, _, h in cap.calls if m_ == 'POST')
+    check(f'{script_name} bin name', post_hdrs.get('X-Bin-Name', '')
           .startswith(f'260126_FCS6-{short}-'))
     check(f'{script_name} detail under 10MB', det_b < 10_000_000)
 
@@ -211,6 +223,22 @@ for script_name, module, short, make_input, bucket, want_kv in CASES:
     for k in want_kv:
         check(f'{script_name} key_values has {k}', k in kv,
               f"(got {sorted(kv)})")
+
+    # Polcurve variants report current density at fixed voltages. The synthetic
+    # curves span 0.90-0.40 V, so all five targets should be present, and every
+    # reported value must be a real number rather than a placeholder.
+    if bucket == 'polcurve':
+        j_keys = [k for k in kv if k.startswith('j @ ')]
+        check(f'{script_name} reports j@V', len(j_keys) == 5,
+              f'(got {sorted(j_keys)})')
+        check(f'{script_name} j@V values numeric',
+              all(isinstance(kv[k], (int, float)) for k in j_keys))
+        # Monotonic: lower voltage must draw more current.
+        ordered = ['j @ 0.7 V', 'j @ 0.65 V', 'j @ 0.6 V', 'j @ 0.5 V', 'j @ 0.4 V']
+        present = [kv[k] for k in ordered if k in kv]
+        check(f'{script_name} j@V rises as V falls',
+              all(a < b for a, b in zip(present, present[1:])),
+              f'(got {present})')
 
     print(f"{script_name:38} {len(summary):>4} {idx_b:>6} {det_b:>9,}  "
           f"{', '.join(f'{k}={v}' for k, v in kv.items()) or '—'}")

@@ -68,6 +68,11 @@ class Mock:
         raise AssertionError(f'unexpected method {method}')
 
 
+def _body(mock, method):
+    """Body of the first call made with a given method."""
+    return next(c['body'] for c in mock.calls if c['method'] == method)
+
+
 def install(mock):
     jsonbin._request = mock
 
@@ -142,9 +147,12 @@ try:
     check_true('pushed', r['pushed'], f"({r['reason']})")
     check('bin id returned', r['bin_id'], 'NEWBIN')
     check('index length', r['n_runs'], 1)
-    check('three calls', [c['method'] for c in m.calls], ['POST', 'GET', 'PUT'])
+    # The index is read first, to look the sample up, then reused for the
+    # write — so a new sample costs GET, POST, PUT.
+    check('three calls', [c['method'] for c in m.calls], ['GET', 'POST', 'PUT'])
+    check_true('a new sample is not reported as merged', not r['merged'])
 
-    post = m.calls[0]
+    post = next(c for c in m.calls if c['method'] == 'POST')
     check('POST to bins root', post['url'], jsonbin._JSONBIN_BASE)
     check('collection header', post['headers'].get('X-Collection-Id'), 'COLL123')
     check('private on create', post['headers'].get('X-Bin-Private'), 'true')
@@ -153,11 +161,11 @@ try:
     check('detail body is schema 2', post['body']['schema'], 2)
     check_true('detail carries sidecars (tier 3)', 'sidecars' in post['body'])
 
-    get = m.calls[1]
+    get = next(c for c in m.calls if c['method'] == 'GET')
     check('GET latest index', get['url'],
           f"{jsonbin._JSONBIN_BASE}/INDEX456/latest")
 
-    put = m.calls[2]
+    put = next(c for c in m.calls if c['method'] == 'PUT')
     check('PUT index', put['url'], f"{jsonbin._JSONBIN_BASE}/INDEX456")
     check_true('PUT sends no X-Bin-Private',
                'X-Bin-Private' not in put['headers'])
@@ -219,12 +227,206 @@ try:
     check_true('reason names the orphan',
                'orphan detail bin NEWBIN retained' in r['reason'],
                f"({r['reason']})")
+    check_true('a created bin is described as an orphan',
+               'orphan' in r['reason'])
 
     # Index read fails: same orphan treatment.
     m = Mock(fail_on={'GET'}); install(m)
     r = push(out)
-    check_true('read failure keeps orphan',
-               r['bin_id'] == 'NEWBIN' and 'orphan' in r['reason'])
+    # A failing GET breaks the sample lookup first; the run still lands in a
+    # new bin, and the index write then fails on the same GET.
+    check_true('read failure still creates the bin', r['bin_id'] == 'NEWBIN')
+    check_true('read failure is reported', not r['pushed'] and bool(r['reason']))
+finally:
+    shutil.rmtree(tmp)
+
+print("sidecar selection and size guard")
+tmp = tempfile.mkdtemp()
+try:
+    out = make_output(tmp)
+    d = Path(out) / '_plot_data'
+    # A heavy cleaning sidecar alongside the light polcurve one.
+    (d / 'cleaning_cycles_a4_EClean50x.json').write_text(json.dumps(
+        {'plot_type': 'cleaning_cycles',
+         'data': {'axes': [{'texts': [{'text': 'Cycles = 50'}],
+                            'axhlines': [], 'axvlines': [],
+                            'lines': [{'y': list(range(2000))}]}]}}))
+
+    original_excl = jsonbin.SIDECAR_EXCLUDE_BUCKETS
+    original_max = jsonbin.MAX_BODY_BYTES
+
+    # Default excludes cleaning by bucket, regardless of available room.
+    jsonbin.SIDECAR_EXCLUDE_BUCKETS = {'cleaning'}
+    m = Mock(); install(m)
+    r = push(out)
+    check_true('pushed with cleaning excluded', r['pushed'], f"({r['reason']})")
+    check('one sidecar kept', r['sidecars_kept'], 1)
+    check('cleaning dropped', r['sidecars_dropped'], 1)
+    check_true('flagged omitted', r['sidecars_omitted'])
+    check_true('reason counts them', '1 of 2 sidecars' in (r['reason'] or ''),
+               f"({r['reason']})")
+    # Full breakdown is reported even for buckets that were not stored.
+    check_true('bucket breakdown reported',
+               'cleaning' in r['sidecar_bytes_by_bucket']
+               and 'polcurve' in r['sidecar_bytes_by_bucket'])
+    sent = _body(m, 'POST')
+    check_true('sidecars present', 'sidecars' in sent)
+
+    # With nothing excluded, both are stored.
+    jsonbin.SIDECAR_EXCLUDE_BUCKETS = set()
+    m = Mock(); install(m)
+    r = push(out)
+    check('both kept when nothing excluded', r['sidecars_kept'], 2)
+    check('none dropped', r['sidecars_dropped'], 0)
+    check_true('not flagged omitted', not r['sidecars_omitted'])
+    check_true('no reason on clean push', r['reason'] is None)
+
+    # A budget too small for everything keeps the smallest and still pushes.
+    jsonbin.MAX_BODY_BYTES = 4000
+    m = Mock(); install(m)
+    r = push(out)
+    check_true('still pushes under a tight budget', r['pushed'],
+               f"({r['reason']})")
+    check_true('body within limit', r['body_bytes'] <= 4000,
+               f"({r['body_bytes']} B)")
+    check_true('something was dropped', r['sidecars_dropped'] >= 1)
+    check('index still appended', len(m.written_index['runs']), 1)
+    # Data holds one unit per analysis; find the polcurve one rather than
+    # assuming ordering.
+    pol = [d for d in m.written_index['runs'][0]['Data']
+           if d['Analysis'] == 'polcurve']
+    check('polcurve unit present', len(pol), 1)
+    check_true('index entry unaffected by sidecar trimming',
+               pol[0]['key_values']['OCV'] == 0.95)
+
+    # A budget too small even for the base record degrades to no sidecars.
+    jsonbin.MAX_BODY_BYTES = 200
+    m = Mock(); install(m)
+    r = push(out)
+    check_true('still pushes when base alone is over', r['pushed'],
+               f"({r['reason']})")
+    sent = _body(m, 'POST')
+    check_true('sidecars gone entirely', 'sidecars' not in sent)
+    check_true('omission marked in record', 'sidecars_omitted' in sent)
+    check_true('metrics survive', bool(sent.get('metrics')))
+
+    jsonbin.SIDECAR_EXCLUDE_BUCKETS = original_excl
+    jsonbin.MAX_BODY_BYTES = original_max
+finally:
+    shutil.rmtree(tmp)
+
+print("merge by sample")
+
+class MergeMock:
+    """Index and detail bins that persist across pushes, like the real store."""
+
+    def __init__(self):
+        self.calls = []
+        self.index = {'schema': 2, 'runs': []}
+        self.bins = {}
+        self._n = 0
+
+    def __call__(self, url, method='GET', body=None, extra_headers=None):
+        self.calls.append({'url': url, 'method': method, 'body': body,
+                           'headers': extra_headers or {}})
+        if method == 'POST':
+            self._n += 1
+            bid = f'BIN{self._n}'
+            self.bins[bid] = json.loads(json.dumps(body))
+            return {'record': body, 'metadata': {'id': bid}}
+        if method == 'GET':
+            for bid in self.bins:
+                if f'/{bid}/' in url:
+                    return {'record': json.loads(json.dumps(self.bins[bid]))}
+            return {'record': json.loads(json.dumps(self.index))}
+        if method == 'PUT':
+            for bid in self.bins:
+                if url.endswith(f'/{bid}'):
+                    self.bins[bid] = json.loads(json.dumps(body))
+                    return {'record': body}
+            self.index = json.loads(json.dumps(body))
+            return {'record': body}
+        raise AssertionError(method)
+
+
+def make_merge_output(root, plots):
+    d = Path(root) / 'output' / '_plot_data'
+    d.mkdir(parents=True, exist_ok=True)
+    for name, pt, txt in plots:
+        d_sc = {'plot_type': pt, 'data': {'axes': [{
+            'texts': [{'text': txt}] if txt else [],
+            'axhlines': [], 'axvlines': [], 'lines': []}]}}
+        (d / f'{name}.json').write_text(json.dumps(d_sc))
+    return Path(root) / 'output'
+
+
+XO = lambda st: (f'crossover_{st}_G_H2X_80.3Cell-100RH_0.4WH2', 'crossover',
+                 '|j_xover| = 1.2 mA/cm2')
+PC = lambda st: (f'polcurve_{st}_G_PolarizationCurve_80.3Cell-95RH_0.2WH2',
+                 'polcurve', 'OCV = 0.95 V')
+
+tmp = tempfile.mkdtemp()
+try:
+    m = MergeMock(); install(m)
+    SAMPLE = '260421_GSMA-Qual-1'
+
+    # First push: a standalone crossover at two steps.
+    out1 = make_merge_output(Path(tmp) / 'r1', [XO('a6'), XO('b28b')])
+    r1 = jsonbin.push_job_metrics(
+        job_id='job-1', sample_name=SAMPLE, script='H2 Crossover',
+        output_dir=out1, input_files=['a.csv'], script_short='XO')
+    check_true('first push succeeds', r1['pushed'], f"({r1['reason']})")
+    check_true('first push is not a merge', not r1['merged'])
+    check('index has one entry', len(m.index['runs']), 1)
+    first_bin = r1['bin_id']
+
+    # Second push: Full Analysis covering one of those steps plus new ones.
+    out2 = make_merge_output(Path(tmp) / 'r2', [PC('b17b'), PC('c6'), XO('a6')])
+    r2 = jsonbin.push_job_metrics(
+        job_id='job-2', sample_name=SAMPLE, script='Fuel Cell Full Analysis',
+        output_dir=out2, input_files=['b.csv'], script_short='FCA')
+    check_true('second push succeeds', r2['pushed'], f"({r2['reason']})")
+    check_true('second push reports a merge', r2['merged'])
+    check('same bin reused', r2['bin_id'], first_bin)
+    check('index still has one entry', len(m.index['runs']), 1)
+    check('n_jobs tracks contributors', r2['n_jobs'], 2)
+
+    # The merged bin holds both runs' data, with the covered step replaced.
+    binrec = m.bins[first_bin]
+    check('merged bin has both buckets',
+          sorted(binrec['metrics'].keys()), ['crossover', 'polcurve'])
+    check('untouched crossover step survives',
+          len(binrec['metrics']['crossover']), 2)
+    check('polcurve added', len(binrec['metrics']['polcurve']), 2)
+    check('provenance records both jobs',
+          [j['job_id'] for j in binrec['jobs']], ['job-1', 'job-2'])
+
+    entry = m.index['runs'][0]
+    units = sorted((u['Analysis'], u['step']) for u in entry['Data'])
+    check('index units match the bin', units,
+          [('crossover', 'a6'), ('crossover', 'b28b'),
+           ('polcurve', 'b17b'), ('polcurve', 'c6')])
+    check('entry job_id is the last writer', entry['job_id'], 'job-2')
+
+    # A different sample must not merge into this one.
+    out3 = make_merge_output(Path(tmp) / 'r3', [PC('b17b')])
+    r3 = jsonbin.push_job_metrics(
+        job_id='job-3', sample_name='260429_GSMA-Qual-3',
+        script='Fuel Cell Full Analysis', output_dir=out3,
+        input_files=['c.csv'], script_short='FCA')
+    check_true('different sample is not merged', not r3['merged'])
+    check('different sample gets its own bin', r3['bin_id'] != first_bin, True)
+    check('index now has two entries', len(m.index['runs']), 2)
+
+    # The kill switch restores append-only behaviour.
+    jsonbin.MERGE_BY_SAMPLE = False
+    out4 = make_merge_output(Path(tmp) / 'r4', [XO('a6')])
+    r4 = jsonbin.push_job_metrics(
+        job_id='job-4', sample_name=SAMPLE, script='H2 Crossover',
+        output_dir=out4, input_files=['d.csv'], script_short='XO')
+    check_true('kill switch disables merging', not r4['merged'])
+    check('kill switch appends instead', len(m.index['runs']), 3)
+    jsonbin.MERGE_BY_SAMPLE = True
 finally:
     shutil.rmtree(tmp)
 
@@ -249,7 +451,7 @@ try:
     m = Mock(); install(m)
     r = push(out, summary=[{'Label': 'cellA', 'OCV': 0.88}])
     check_true('pushed', r['pushed'])
-    check_true('summary embedded in detail', 'summary' in m.calls[0]['body'])
+    check_true('summary embedded in detail', 'summary' in _body(m, 'POST'))
     entry = m.written_index['runs'][0]
     check('summary wins over parsed in key_values',
           entry['Data'][0]['key_values']['OCV'], 0.88)

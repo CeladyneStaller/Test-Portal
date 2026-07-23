@@ -38,7 +38,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import urllib.request as _ureq
@@ -51,9 +51,12 @@ from scripts.helpers.record import (
     attach_sidecars,
     build_detail_record,
     build_index_entry,
+    decode_sidecars,
     detail_bin_name,
     is_comparison_script,
     load_sidecars,
+    merge_detail_record,
+    merge_index_entry,
     select_sidecars,
     sidecar_bucket_sizes,
     sidecar_sizes,
@@ -83,8 +86,32 @@ _TIMEOUT_S = 20
 _MAX_RETRIES = 3
 _RETRY_BACKOFF_S = 1.5  # exponential: 1.5, 3.0, 6.0
 
+# Merge a run into the sample's existing bin rather than creating a new one.
+# An env kill-switch rather than a constant: this changes the write path and
+# has a data-displacement mode, so reverting to append-only should not need a
+# code change.
+MERGE_BY_SAMPLE = os.environ.get(
+    'JSONBIN_MERGE_BY_SAMPLE', 'true').strip().lower() not in ('0', 'false', 'no')
+
 # Serializes the index read-modify-write across concurrent job completions.
 _index_lock = threading.Lock()
+
+# One lock per sample. Merging is read-modify-write on a detail bin, so two
+# jobs finishing for the same sample would otherwise lose one another's work.
+# Locks are acquired sample-first then index, always in that order, so the two
+# cannot deadlock.
+_sample_locks: Dict[str, threading.Lock] = {}
+_sample_locks_guard = threading.Lock()
+
+
+def _sample_lock(sample_name: str) -> threading.Lock:
+    key = sample_name or '__unnamed__'
+    with _sample_locks_guard:
+        lock = _sample_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _sample_locks[key] = lock
+        return lock
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -202,6 +229,24 @@ def create_detail_bin(record: Dict[str, Any], *, name: str = '') -> str:
     return bin_id
 
 
+def fetch_detail_bin(bin_id: str) -> Dict[str, Any]:
+    """Read one detail bin's record."""
+    payload = _request(f"{_JSONBIN_BASE}/{bin_id}/latest", method='GET')
+    record = payload.get('record') if isinstance(payload, dict) else None
+    if not isinstance(record, dict):
+        raise RuntimeError(f'detail bin {bin_id} returned no usable record')
+    return record
+
+
+def update_detail_bin(bin_id: str, record: Dict[str, Any]) -> None:
+    """Overwrite an existing detail bin.
+
+    As with the index, X-Bin-Private is omitted: on a PUT it makes JSONBin
+    create a new bin instead of updating the target.
+    """
+    _request(f"{_JSONBIN_BASE}/{bin_id}", method='PUT', body=record)
+
+
 # ─────────────────────────────────────────────────────────────────────
 #  Index bin
 # ─────────────────────────────────────────────────────────────────────
@@ -240,9 +285,55 @@ def append_index_entry(entry: Dict[str, Any]) -> int:
     return len(index['runs'])
 
 
+def find_sample_entry(index: Dict[str, Any],
+                      sample_name: str) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+    """Most recent index entry for a sample, with its position.
+
+    Returns (None, None) when the sample has no entry yet.
+
+    A sample may still have several entries — anything written before merging
+    was switched on, including the degraded push and its retry. The most recent
+    is the one merged into; the others are left alone rather than guessed at,
+    because consolidating them properly means fetching and merging their detail
+    bins, which is phase 5's job.
+    """
+    matches = [(i, e) for i, e in enumerate(index.get('runs', []))
+               if e.get('sample_name') == sample_name]
+    if not matches:
+        return None, None
+    matches.sort(key=lambda t: str(t[1].get('run_date')
+                                   or t[1].get('timestamp', '')))
+    return matches[-1]
+
+
+def write_index_entry(index: Dict[str, Any], entry: Dict[str, Any],
+                      position: Optional[int]) -> int:
+    """Replace the entry at `position`, or append when it is None.
+
+    Caller must hold _index_lock and must have read `index` inside that lock.
+    """
+    runs = index.setdefault('runs', [])
+    if position is None:
+        runs.append(entry)
+    else:
+        runs[position] = entry
+    _write_index(index)
+    return len(runs)
+
+
 # ─────────────────────────────────────────────────────────────────────
 #  Public entry point
 # ─────────────────────────────────────────────────────────────────────
+
+def _plot_bucket_of(sidecar: Dict[str, Any]) -> str:
+    from scripts.helpers.record import plot_bucket
+    return plot_bucket(sidecar.get('plot_type', 'unknown'))
+
+
+def _plot_step_of(plot_name: str) -> str:
+    from scripts.helpers.record import parse_conditions
+    return str(parse_conditions(plot_name).get('step') or '')
+
 
 def push_job_metrics(*,
                      job_id: str,
@@ -270,7 +361,9 @@ def push_job_metrics(*,
                            'bin_id': None, 'n_runs': None,
                            'body_bytes': None, 'sidecars_omitted': False,
                            'sidecars_kept': 0, 'sidecars_dropped': 0,
-                           'sidecar_bytes_by_bucket': {}}
+                           'sidecar_bytes_by_bucket': {},
+                           'merged': False, 'sidecars_displaced': 0,
+                           'n_jobs': None}
 
     # Comparison output is derived from runs already stored. Excluded here as
     # well as in record.py so the rule holds regardless of caller.
@@ -310,72 +403,154 @@ def push_job_metrics(*,
         out['reason'] = 'skipped: no sidecar data found in output'
         return out
 
-    # Fit sidecars to the wire budget.
+    # ── locate the sample's existing bin, if merging is on ──
     #
-    # JSONBin's nginx front end rejects oversized bodies with a 413 before the
-    # request reaches their application, so this has to be enforced client-side.
-    # Two filters: excluded buckets go first, then the smallest of what remains
-    # are kept until the budget runs out. Keeping many light analyses beats
-    # keeping one heavy one, and it degrades smoothly rather than all-or-nothing.
-    base_bytes = len(json.dumps(record, ensure_ascii=False).encode())
-    kept, dropped = select_sidecars(
-        all_sidecars,
-        budget_bytes=max(0, MAX_BODY_BYTES - base_bytes) * 4,  # ~4.9x compression
-        exclude_buckets=SIDECAR_EXCLUDE_BUCKETS)
+    # The index is read once here and reused for the write, both inside the
+    # index lock, so a concurrent push cannot slip between the lookup and the
+    # update. The sample lock spans the whole fetch-merge-write sequence for
+    # this sample's detail bin.
+    existing_entry: Optional[Dict[str, Any]] = None
+    existing_record: Optional[Dict[str, Any]] = None
+    entry_pos: Optional[int] = None
+    bin_id: Optional[str] = None
+    index: Optional[Dict[str, Any]] = None
 
-    attach_sidecars(record, kept)
-    body_bytes = len(json.dumps(record, ensure_ascii=False).encode())
+    sample_lk = _sample_lock(sample_name or '')
+    with sample_lk:
+        if MERGE_BY_SAMPLE:
+            try:
+                with _index_lock:
+                    index = fetch_index()
+                entry_pos, existing_entry = find_sample_entry(
+                    index, sample_name or '')
+                if existing_entry and existing_entry.get('bin_id'):
+                    bin_id = existing_entry['bin_id']
+                    existing_record = fetch_detail_bin(bin_id)
+            except Exception as e:
+                # A lookup failure must not lose the run. Fall back to creating
+                # a new bin, which is the pre-merge behaviour.
+                out['reason'] = f'sample lookup failed, creating a new bin: {e}'
+                existing_entry = existing_record = index = None
+                entry_pos = bin_id = None
 
-    # The compression estimate can be optimistic. Trim the largest remaining
-    # sidecar until the real serialized size fits.
-    while body_bytes > MAX_BODY_BYTES and kept:
-        largest = next(iter(sidecar_sizes(kept)))
-        kept.pop(largest)
-        dropped.append(largest)
-        attach_sidecars(record, kept)
-        body_bytes = len(json.dumps(record, ensure_ascii=False).encode())
+        # ── merge, then fit the *merged* result to the wire budget ──
+        #
+        # The limit applies to the merged whole, not the increment, so a run
+        # that would have fit on its own can still overflow once combined.
+        # Fork D: the incoming run's sidecars are protected and previously
+        # stored ones are dropped first — a fresh measurement must never
+        # silently fail to store its plots.
+        incoming_names = set(all_sidecars)
+        merged_sidecars = dict(all_sidecars)
+        if existing_record:
+            prior = decode_sidecars(existing_record)
+            touched = {(b, str((e.get('conditions') or {}).get('step') or ''))
+                       for b, plots in (record.get('metrics') or {}).items()
+                       for e in plots.values()}
+            for name, sc in prior.items():
+                b = _plot_bucket_of(sc)
+                st = _plot_step_of(name)
+                if (b, st) not in touched:
+                    merged_sidecars.setdefault(name, sc)
 
-    if body_bytes > MAX_BODY_BYTES:
-        # Nothing left to trim: the base record alone is over budget.
-        record = strip_sidecars(
-            record, f'base record alone was {body_bytes:,} B, over the '
-                    f'{MAX_BODY_BYTES:,} B transport limit')
-        body_bytes = len(json.dumps(record, ensure_ascii=False).encode())
+        base = merge_detail_record(existing_record, record) if existing_record \
+            else record
+        attach_sidecars(base, {})
+        base_bytes = len(json.dumps(base, ensure_ascii=False).encode())
 
-    out['body_bytes'] = body_bytes
-    out['sidecars_kept'] = len(kept)
-    out['sidecars_dropped'] = len(dropped)
-    out['sidecars_omitted'] = bool(dropped)
+        kept, dropped = select_sidecars(
+            merged_sidecars,
+            budget_bytes=max(0, MAX_BODY_BYTES - base_bytes) * 4,
+            exclude_buckets=SIDECAR_EXCLUDE_BUCKETS)
 
-    try:
-        bin_id = create_detail_bin(
-            record, name=detail_bin_name(record, script_short))
-    except Exception as e:
-        out['reason'] = f'detail bin creation failed: {e}'
-        return out
-    out['bin_id'] = bin_id
+        attach_sidecars(base, kept)
+        body_bytes = len(json.dumps(base, ensure_ascii=False).encode())
 
-    try:
-        entry = build_index_entry(record, bin_id)
-    except Exception as e:
-        # Fork D: the detail bin survives as an orphan rather than being deleted.
-        out['reason'] = (f'index entry assembly failed: {e} — '
-                         f'orphan detail bin {bin_id} retained')
-        return out
+        # Trim largest-first, but sacrifice previously-stored sidecars before
+        # any belonging to the run being written.
+        while body_bytes > MAX_BODY_BYTES and kept:
+            ranked = list(sidecar_sizes(kept))
+            victim = next((n for n in ranked if n not in incoming_names), None)
+            if victim is None:
+                victim = ranked[0]
+            kept.pop(victim)
+            dropped.append(victim)
+            attach_sidecars(base, kept)
+            body_bytes = len(json.dumps(base, ensure_ascii=False).encode())
 
-    try:
-        with _index_lock:
-            out['n_runs'] = append_index_entry(entry)
-    except Exception as e:
-        out['reason'] = (f'index append failed: {e} — '
-                         f'orphan detail bin {bin_id} retained')
-        return out
+        if body_bytes > MAX_BODY_BYTES:
+            base = strip_sidecars(
+                base, f'record was {body_bytes:,} B, over the '
+                      f'{MAX_BODY_BYTES:,} B transport limit')
+            body_bytes = len(json.dumps(base, ensure_ascii=False).encode())
+
+        record = base
+        out['body_bytes'] = body_bytes
+        out['sidecars_kept'] = len(kept)
+        out['sidecars_dropped'] = len(dropped)
+        out['sidecars_omitted'] = bool(dropped)
+        out['merged'] = bool(existing_record)
+        # Visible per fork D: how many already-stored sidecars this merge cost.
+        displaced = [n for n in dropped if n not in incoming_names]
+        out['sidecars_displaced'] = len(displaced)
+
+        # ── write the detail bin ──
+        was_update = bool(bin_id)
+        try:
+            if bin_id:
+                update_detail_bin(bin_id, record)
+            else:
+                bin_id = create_detail_bin(
+                    record, name=detail_bin_name(record, script_short))
+        except Exception as e:
+            out['reason'] = (f'detail bin {"update" if was_update else "creation"} '
+                             f'failed: {e}')
+            return out
+        out['bin_id'] = bin_id
+
+        # A bin written but not referenced by the index fails two different
+        # ways depending on how it got there, and the distinction matters when
+        # cleaning up: a freshly created bin is unreachable, whereas an updated
+        # one is still indexed and merely newer than the index describes.
+        def _stranded(stage: str, err: Exception) -> str:
+            if was_update:
+                return (f'{stage}: {err} — detail bin {bin_id} was updated but '
+                        f'the index still describes its previous state')
+            return (f'{stage}: {err} — orphan detail bin {bin_id} retained')
+
+        # ── write the index entry ──
+        try:
+            entry = build_index_entry(record, bin_id)
+            if existing_entry:
+                entry = merge_index_entry(existing_entry, entry)
+            out['n_jobs'] = entry.get('n_jobs', 1)
+        except Exception as e:
+            out['reason'] = _stranded('index entry assembly failed', e)
+            return out
+
+        try:
+            with _index_lock:
+                if index is None:
+                    # Reached only when merging is off, or the lookup failed.
+                    # Either way append rather than replace: with merging off
+                    # that is the intended behaviour, and after a failed lookup
+                    # a duplicate entry is a far better outcome than
+                    # overwriting one whose contents were never read.
+                    index = fetch_index()
+                    entry_pos = None
+                out['n_runs'] = write_index_entry(index, entry, entry_pos)
+        except Exception as e:
+            out['reason'] = _stranded('index write failed', e)
+            return out
 
     out['pushed'] = True
     if out['sidecars_dropped']:
-        out['reason'] = (
-            f"pushed with {out['sidecars_kept']} of "
-            f"{out['sidecars_kept'] + out['sidecars_dropped']} sidecars — "
-            f"the rest were excluded by bucket or did not fit the transport "
-            f"limit; metrics and summary are intact")
+        note = (f"pushed with {out['sidecars_kept']} of "
+                f"{out['sidecars_kept'] + out['sidecars_dropped']} sidecars — "
+                f"the rest were excluded by bucket or did not fit the "
+                f"transport limit; metrics and summary are intact")
+        if out['sidecars_displaced']:
+            note += (f". {out['sidecars_displaced']} previously stored "
+                     f"sidecar(s) were displaced by this merge")
+        out['reason'] = note
     return out
