@@ -261,6 +261,7 @@ def _num(s: Optional[str]) -> Optional[float]:
     if s is None:
         return None
     try:
+        # 'o' is the legacy decimal marker; '.' passes through untouched.
         return float(s.replace('o', '.'))
     except (ValueError, TypeError):
         return None
@@ -272,14 +273,54 @@ def _num(s: Optional[str]) -> Optional[float]:
 # matches 'H2' inside a gas spec when the filename has no real step, silently
 # producing step='h2'. Anchoring to token boundaries removes that: every gas
 # token starts with a digit, so it can never satisfy this pattern.
-_STEP_RE = re.compile(r'(?:^|_)([A-Za-z]\d+)(?=_|$)')
+# Two filename conventions are in active use and both must parse:
+#
+#   0o4H2 / 80C / 100kPa            'o' stands in for a decimal point
+#   0.4WH2 / 80.3Cell / 0.2WA       literal decimal, W/D wet-dry marker
+#
+# A number is therefore digits with an optional fractional part introduced by
+# either '.' or 'o'.
+_NUM = r'(\d+(?:[.o]\d+)?)'
 
+# Step is an underscore-delimited token: one letter, digits, and an optional
+# trailing letter. That last part matters — b17b, b21b and b45b are real steps,
+# and without it they parse as no step at all, which collapses distinct
+# measurements into one index unit.
+#
+# Deliberately not matched: multi-letter prefixes such as Ramp0 or shutdown1.
+# Allowing [A-Za-z]+ there would also match sample-name fragments like Gen2.
+# Those files carry no key_values, so the units they produce hold nothing the
+# index needs to tell apart.
+_STEP_RE = re.compile(r'(?:^|_)([A-Za-z]\d+[A-Za-z]?)(?=_|$)')
+
+# A gas token may be followed by a meaningless 'B<n>' suffix (0.05WN2B3). It
+# carries no information but must not block the match, so the boundary check
+# admits it alongside end-of-string and ordinary delimiters.
+_GAS_END = r'(?=$|[^A-Za-z0-9]|B\d)'
+
+# Gas flows: number, optional wet/dry marker, species. 'Air' is tried before
+# the bare 'A' abbreviation so 0.4WAir does not match as air with a stray 'ir'.
+# The W/D marker is recognised but not recorded — it would add bytes to every
+# gas-bearing unit, and the units it would disambiguate carry no key_values.
 _GAS_PATTERNS = (
-    ('H2_slpm', re.compile(r'(\d+(?:o\d+)?)H2(?![A-Za-z])', re.IGNORECASE)),
-    ('Air_slpm', re.compile(r'(\d+(?:o\d+)?)Air', re.IGNORECASE)),
-    ('N2_slpm', re.compile(r'(\d+(?:o\d+)?)N2(?![A-Za-z])', re.IGNORECASE)),
-    ('O2_slpm', re.compile(r'(\d+(?:o\d+)?)O2(?![A-Za-z])', re.IGNORECASE)),
+    ('H2_slpm', re.compile(_NUM + r'[WD]?H2' + _GAS_END)),
+    ('N2_slpm', re.compile(_NUM + r'[WD]?N2' + _GAS_END)),
+    ('O2_slpm', re.compile(_NUM + r'[WD]?O2' + _GAS_END)),
+    ('Air_slpm', re.compile(_NUM + r'[WD]?(?:Air|A)' + _GAS_END)),
 )
+
+
+# Only these are treated as file extensions. os.path.splitext splits on the
+# last dot, which in this domain is usually a decimal point: it turns
+# '..._0.2WH2-0.2WA' into a stem ending '-0' and an "extension" of '.2WA',
+# silently discarding a real gas flow. Matching known suffixes instead leaves
+# the decimals alone.
+_EXT_RE = re.compile(
+    r'\.(png|jpg|jpeg|svg|pdf|json|csv|txt|tsv|fcd|xlsx|xls)$', re.IGNORECASE)
+
+
+def _strip_extension(basename: str) -> str:
+    return _EXT_RE.sub('', basename)
 
 
 def parse_conditions(filename: str) -> Dict[str, Any]:
@@ -295,22 +336,23 @@ def parse_conditions(filename: str) -> Dict[str, Any]:
     """
     if not filename:
         return {}
-    name = os.path.splitext(os.path.basename(filename))[0]
+    name = _strip_extension(os.path.basename(filename))
     cond: Dict[str, Any] = {}
 
     m = _STEP_RE.search(name)
     if m:
         cond['step'] = m.group(1).lower()
 
-    m = re.search(r'(\d+(?:o\d+)?)C(?![A-Za-z])', name)
+    # '80C' and '80.3Cell' are the same field in two conventions.
+    m = re.search(_NUM + r'C(?:ell)?(?![A-Za-z])', name)
     if m and (v := _num(m.group(1))) is not None:
         cond['T_C'] = v
 
-    m = re.search(r'(\d+(?:o\d+)?)RH', name, re.IGNORECASE)
+    m = re.search(_NUM + r'RH', name, re.IGNORECASE)
     if m and (v := _num(m.group(1))) is not None:
         cond['RH_pct'] = v
 
-    m = re.search(r'(\d+(?:o\d+)?)\s*(kPa|barg|psi|bar)', name, re.IGNORECASE)
+    m = re.search(_NUM + r'\s*(kPa|barg|psi|bar)', name, re.IGNORECASE)
     if m and (v := _num(m.group(1))) is not None:
         cond['P_value'] = v
         cond['P_unit'] = m.group(2)
@@ -321,7 +363,7 @@ def parse_conditions(filename: str) -> Dict[str, Any]:
             cond[key] = v
 
     # Voltage setpoint: digits + V, not adjacent to letters (excludes 'mV', 'kV')
-    m = re.search(r'(?<![A-Za-z])(\d+(?:o\d+)?)V(?![A-Za-z])', name)
+    m = re.search(r'(?<![A-Za-z])' + _NUM + r'V(?![A-Za-z])', name)
     if m and (v := _num(m.group(1))) is not None:
         cond['V_setpoint'] = v
 
@@ -688,9 +730,44 @@ def _analysis_units(metrics: Dict[str, Dict[str, Any]],
     # run, say) must still be represented.
     informative = {u['Analysis'] for u in built
                    if u['step'] or u['Conditions'] or u.get('key_values')}
-    return [u for u in built
-            if u['step'] or u['Conditions'] or u.get('key_values')
-            or u['Analysis'] not in informative]
+    built = [u for u in built
+             if u['step'] or u['Conditions'] or u.get('key_values')
+             or u['Analysis'] not in informative]
+
+    return _trim_conditions(built)
+
+
+def _trim_conditions(units: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop Conditions from units that promote no key_values.
+
+    Those units exist to say "this run included an OCV analysis at step b18";
+    the conditions behind them are already in the detail bin, per plot, which is
+    what run detail reads. Carrying them in the index costs ~110 B each on the
+    populated naming convention for something nothing queries.
+
+    Safe only because steps now parse. Conditions previously did part of the
+    work of telling units apart — b17b and b20b both failed to yield a step and
+    were separated solely by their RH values differing. With steps parsing,
+    (Analysis, step) is sufficient identity, so the conditions are redundant
+    rather than load-bearing.
+
+    Units that lose their Conditions are then re-merged on (Analysis, step),
+    since two units differing only by a field that is no longer emitted would
+    otherwise appear as indistinguishable duplicates.
+    """
+    out: List[Dict[str, Any]] = []
+    seen: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for u in units:
+        if u.get('key_values'):
+            out.append(u)
+            continue
+        key = (u['Analysis'], u['step'])
+        if key in seen:
+            continue                      # already represented
+        slim = {'Analysis': u['Analysis'], 'step': u['step']}
+        seen[key] = slim
+        out.append(slim)
+    return out
 
 
 def build_index_entry(detail_record: Dict[str, Any], bin_id: str) -> Dict[str, Any]:

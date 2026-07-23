@@ -129,6 +129,45 @@ check('multi-letter token is not a step',
 check('single-letter sample label reads as step (known)',
       parse_conditions('cleaning_cycles_s1_CV-500mVs').get('step'), 's1')
 
+print("parse_conditions — both naming conventions")
+# Convention A: 'o' decimal marker. Must not regress.
+check('convention A parses fully',
+      parse_conditions('polcurve_c6_IV_80C_60RH_0o3V_0o4H2_0o4Air_100kPa.png'),
+      {'step': 'c6', 'T_C': 80.0, 'RH_pct': 60.0, 'P_value': 100.0,
+       'P_unit': 'kPa', 'H2_slpm': 0.4, 'Air_slpm': 0.4, 'V_setpoint': 0.3})
+
+# Convention B: literal decimals, Cell suffix, W/D marker, A for air.
+check('convention B parses fully',
+      parse_conditions(
+          'polcurve_b17b_GSMA-1_PolarizationCurve_80.3Cell-95RH_0.2WH2-0.2WA.png'),
+      {'step': 'b17b', 'T_C': 80.3, 'RH_pct': 95.0,
+       'H2_slpm': 0.2, 'Air_slpm': 0.2})
+check('integer Cell temperature',
+      parse_conditions('ocv_a0_X_83Cell-100RH_0.2WN2-0.2DN2B3.png').get('T_C'), 83.0)
+check('dry marker accepted',
+      parse_conditions('ocv_a0_X_83Cell-100RH_0.2DN2.png').get('N2_slpm'), 0.2)
+check('meaningless B3 suffix does not block the gas match',
+      parse_conditions('ocv_b21b_X_80.3Cell-100RH_0.05WN2B3.png').get('N2_slpm'), 0.05)
+
+# Trailing-letter steps. Without these, distinct measurements collapse into one
+# index unit — b21b through b24b all merged before this was fixed.
+for st in ('b17b', 'b21b', 'b45b', 'c6', 'a10', 't1'):
+    check(f'step {st}', parse_conditions(
+        f'ocv_{st}_GSMA-1_OCV_80.3Cell-50RH_0.05WH2.png').get('step'), st)
+
+# os.path.splitext splits on the last dot, which here is a decimal point: it
+# would strip '.2WA' as an extension and silently drop a real gas flow.
+check('decimal point is not treated as an extension',
+      parse_conditions('polcurve_b4_X_80.3Cell-95RH_0.2WH2-0.2WA').get('Air_slpm'), 0.2)
+check('a real extension is still stripped',
+      parse_conditions('polcurve_b4_X_80.3Cell-95RH_0.2WH2-0.2WA.png').get('Air_slpm'), 0.2)
+
+# Must not read sample-name fragments as steps.
+check('date prefix and sample name are not steps',
+      parse_conditions('polcurve_260126_FCS6_IV_80C.png').get('step'), None)
+check('multi-letter fragment is not a step',
+      parse_conditions('ocv_260511_Gen2-260506_OCV_80C_100RH.png').get('step'), None)
+
 print("plot_bucket")
 for pt, want in (('polcurve_down', 'polcurve'), ('ir_correction', 'polcurve'),
                  ('nyquist', 'eis'), ('ecsa_hupd', 'ecsa'),
@@ -431,6 +470,41 @@ try:
     idx3 = build_index_entry(rec3, 'bina')
     check_true('ambiguous rows are not guessed',
                all('OCV' not in (u.get('key_values') or {}) for u in idx3['Data']))
+finally:
+    shutil.rmtree(tmp)
+
+print("Conditions trim")
+tmp = tempfile.mkdtemp()
+try:
+    d = Path(tmp) / 'output' / '_plot_data'
+    d.mkdir(parents=True)
+    # One polcurve (promotes key_values) and three OCV plots (do not).
+    (d / 'polcurve_b17b_X_80.3Cell-95RH_0.2WH2-0.2WA.json').write_text(json.dumps(
+        sidecar('polcurve', ['OCV = 0.95 V'])))
+    for st, rh in (('b21b', 100), ('b22b', 100), ('b23b', 50)):
+        (d / f'ocv_{st}_X_80.3Cell-{rh}RH_0.05WH2.json').write_text(
+            json.dumps(sidecar('ocv')))
+    rec = build_detail_record(
+        job_id='jt', sample_name='s', script='Fuel Cell Full Analysis',
+        timestamp='t', input_files=[], output_dir=Path(tmp) / 'output')
+    idx = build_index_entry(rec, 'bint')
+
+    withkv = [u for u in idx['Data'] if u.get('key_values')]
+    nokv = [u for u in idx['Data'] if not u.get('key_values')]
+    check('key-value unit keeps Conditions',
+          all('Conditions' in u for u in withkv), True)
+    check('key-less units drop Conditions',
+          any('Conditions' in u for u in nokv), False)
+    check('trimmed units keep Analysis and step',
+          all(set(u) == {'Analysis', 'step'} for u in nokv), True)
+    # Steps differ, so all three OCV units survive the trim distinctly.
+    check('distinct steps survive the trim',
+          sorted(u['step'] for u in nokv), ['b21b', 'b22b', 'b23b'])
+
+    # Conditions must remain intact in the detail bin — run detail reads them.
+    ocv_plots = rec['metrics']['ocv']
+    check_true('detail bin keeps per-plot conditions',
+               all(p['conditions'].get('T_C') == 80.3 for p in ocv_plots.values()))
 finally:
     shutil.rmtree(tmp)
 
