@@ -96,7 +96,10 @@ def list_runs(*, sample: Optional[str] = None,
     if until:
         runs = [r for r in runs if str(r.get('timestamp', '')) <= until]
 
-    runs.sort(key=lambda r: str(r.get('timestamp', '')), reverse=True)
+    # Order by experiment date where it is known, falling back to the analysis
+    # date. Both are ISO, so the leading YYYY-MM-DD compares lexicographically
+    # even though one is a date and the other a datetime.
+    runs.sort(key=_sort_key, reverse=True)
     total = len(runs)
     if limit:
         runs = runs[:limit]
@@ -107,6 +110,11 @@ def list_runs(*, sample: Optional[str] = None,
         'returned': len(runs),
         'facets': index_facets(index),
     }
+
+
+def _sort_key(entry: Dict[str, Any]) -> str:
+    """Experiment date when recoverable, else the analysis date."""
+    return str(entry.get('run_date') or entry.get('timestamp', ''))[:10]
 
 
 def index_facets(index: Optional[Dict[str, Any]] = None) -> Dict[str, List[str]]:

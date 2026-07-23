@@ -2037,6 +2037,21 @@ function runAnalyses(run) {
   return Array.from(set).sort();
 }
 
+// The experiment date, from the sample-name prefix. Absent when the sample name
+// carries no parseable date, in which case we show the analysis date and say so
+// on hover — an analysis date must not silently masquerade as an experiment one.
+function runDate(r) { return r.run_date || null; }
+
+function runDateLabel(r) {
+  return r.run_date ? r.run_date : fmtTimestamp(r.timestamp);
+}
+
+function runDateTitle(r) {
+  return r.run_date
+    ? `run ${r.run_date} · analysed ${fmtTimestamp(r.timestamp)}`
+    : `no run date in the sample name — showing analysis time ${fmtTimestamp(r.timestamp)}`;
+}
+
 function fmtTimestamp(ts) {
   if (!ts) return '—';
   // 2026-07-22T22:26:04Z → 2026-07-22 22:26
@@ -2071,14 +2086,14 @@ function renderViewRuns(rows) {
         onclick="openRunDetail('${escapeAttr(r.job_id)}')">
       <td class="sample-cell">${escapeHtml(r.sample_name || '—')}</td>
       <td>${escapeHtml(r.script || '—')}</td>
-      <td class="mono">${escapeHtml(fmtTimestamp(r.timestamp))}</td>
+      <td class="mono" title="${escapeAttr(runDateTitle(r))}">${escapeHtml(runDateLabel(r))}</td>
       <td><div class="analysis-chips">${chips}</div></td>
       <td class="kv-inline">${kvStr}</td>
     </tr>`;
   }).join('');
   host.innerHTML = `<table class="runs-table">
     <thead><tr>
-      <th>Sample</th><th>Script</th><th>When</th>
+      <th>Sample</th><th>Script</th><th>Run date</th>
       <th>Analyses</th><th>Key values</th>
     </tr></thead>
     <tbody>${body}</tbody>
@@ -2544,13 +2559,17 @@ function populateMetricPicker() {
 function trendPoints(rows, metric) {
   const pts = [];
   rows.forEach(r => {
-    const t = Date.parse(r.timestamp || '');
+    // Experiment date where known. Plotting against the analysis timestamp
+    // bunches everything at whenever the batch happened to be processed.
+    const iso = r.run_date || r.timestamp || '';
+    const t = Date.parse(iso);
     if (isNaN(t)) return;
     (r.Data || []).forEach(d => {
       const kv = d.key_values || {};
       if (metric in kv && typeof kv[metric] === 'number') {
         pts.push({ t, v: kv[metric], sample: r.sample_name || '—',
-                   step: d.step || '', analysis: d.Analysis || '' });
+                   step: d.step || '', analysis: d.Analysis || '',
+                   dated: !!r.run_date });
       }
     });
   });
@@ -2639,7 +2658,9 @@ function drawTrendChart(pts, metric) {
     const d = new Date(p.t);
     const tstr = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')} ${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}`;
     const stepStr = p.step ? ` (${p.step})` : '';
-    const tip = `${p.sample}${stepStr}\n${metric} = ${fmtNum(p.v)}${unit ? ' ' + unit : ''}\n${tstr}`;
+    const when = p.dated ? `run ${tstr.slice(0, 10)}`
+                         : `analysed ${tstr} (no run date)`;
+    const tip = `${p.sample}${stepStr}\n${metric} = ${fmtNum(p.v)}${unit ? ' ' + unit : ''}\n${when}`;
     svg += `<circle class="pt" cx="${xOf(p.t)}" cy="${yOf(p.v)}" r="3.6" fill="${colorOf[p.sample]}"><title>${escapeHtml(tip)}</title></circle>`;
   });
 

@@ -17,6 +17,7 @@ Content tiers (design doc §3.4, fork F):
 """
 
 import base64
+import datetime
 import gzip
 import json
 import math
@@ -317,6 +318,38 @@ _GAS_PATTERNS = (
 # the decimals alone.
 _EXT_RE = re.compile(
     r'\.(png|jpg|jpeg|svg|pdf|json|csv|txt|tsv|fcd|xlsx|xls)$', re.IGNORECASE)
+
+
+# Sample names carry the experiment date as a YYMMDD prefix. Anchored at the
+# start so an embedded second date cannot win — 260511_Gen2-260506 is the 11th
+# of May, not the 6th. The trailing boundary stops a longer digit run from
+# being read as a date.
+_RUN_DATE_RE = re.compile(r'^(\d{2})(\d{2})(\d{2})(?=[_\-]|$)')
+
+
+def parse_run_date(sample_name: Optional[str]) -> Optional[str]:
+    """Experiment date from a sample-name prefix, as an ISO date string.
+
+    Returns None when there is no prefix or it is not a real calendar date, so
+    absence is meaningful: the consumer knows the date was not recoverable and
+    can fall back to the analysis timestamp itself rather than being handed an
+    analysis date dressed up as an experiment date.
+
+    Why this matters: the index timestamp records when a job was *processed*.
+    All six live entries are stamped within two days of each other because they
+    were analysed in a batch, while the cells were tested across two months.
+    Trending against that axis plots queue order.
+    """
+    if not sample_name:
+        return None
+    m = _RUN_DATE_RE.match(str(sample_name))
+    if not m:
+        return None
+    yy, mm, dd = (int(g) for g in m.groups())
+    try:
+        return datetime.date(2000 + yy, mm, dd).isoformat()
+    except ValueError:
+        return None          # e.g. month 34 — a number, but not a date
 
 
 def _strip_extension(basename: str) -> str:
@@ -777,7 +810,7 @@ def build_index_entry(detail_record: Dict[str, Any], bin_id: str) -> Dict[str, A
     Analysis run spanning several characterizations and setpoints is represented
     without collapsing them to a single arbitrary value.
     """
-    return {
+    entry: Dict[str, Any] = {
         'job_id': detail_record.get('job_id', ''),
         'sample_name': detail_record.get('sample_name', ''),
         'script': detail_record.get('script', ''),
@@ -786,6 +819,13 @@ def build_index_entry(detail_record: Dict[str, Any], bin_id: str) -> Dict[str, A
         'Data': _analysis_units(detail_record.get('metrics', {}),
                                 detail_record.get('summary')),
     }
+    # Emitted only when recoverable. Consumers fall back to `timestamp` and can
+    # tell the two apart, rather than an analysis date silently standing in for
+    # an experiment date.
+    run_date = parse_run_date(detail_record.get('sample_name'))
+    if run_date:
+        entry['run_date'] = run_date
+    return entry
 
 
 def detail_bin_name(detail_record: Dict[str, Any], script_short: str = '') -> str:
