@@ -315,9 +315,13 @@ async def view_runs(sample: str = Query(None), script: str = Query(None),
         raise HTTPException(502, f"could not read index: {e}")
 
 
-@app.get("/api/view/runs/{job_id}")
-async def view_run_detail(job_id: str):
+@app.get("/api/view/runs/{key}")
+async def view_run_detail(key: str):
     """One run's detail bin: full metrics, summary, and plot inventory.
+
+    `key` identifies a run by bin id, sample name or job id. Bin id is the
+    unambiguous one and is what the UI sends, since a sample may still have
+    more than one entry until migration consolidates them.
 
     The compressed sidecar blob is dropped from the response — it can be tens of
     KB and the browser never consumes it directly. The plot inventory reports
@@ -325,13 +329,13 @@ async def view_run_detail(job_id: str):
     """
     from scripts.helpers import viewstore
     try:
-        detail = viewstore.fetch_detail(job_id)
+        detail = viewstore.fetch_detail(key)
     except KeyError:
-        raise HTTPException(404, f"no run with job_id {job_id}")
+        raise HTTPException(404, f"no indexed run matching {key}")
     except Exception as e:
         raise HTTPException(502, f"could not read detail bin: {e}")
     slim = {k: v for k, v in detail.items() if k != 'sidecars'}
-    slim['plots'] = viewstore.run_plots(job_id)
+    slim['plots'] = viewstore.run_plots(key)
     return slim
 
 
@@ -348,14 +352,14 @@ async def view_render(payload: dict):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    job_id = payload.get('job_id')
+    key = payload.get('key') or payload.get('job_id')
     plot = payload.get('plot')
-    if not job_id or not plot:
-        raise HTTPException(400, "job_id and plot are required")
+    if not key or not plot:
+        raise HTTPException(400, "key and plot are required")
 
     render_dir = JOBS_DIR / f"view-render-{uuid.uuid4().hex[:8]}"
     try:
-        written = viewstore.materialize_sidecars(job_id, render_dir, plots=[plot])
+        written = viewstore.materialize_sidecars(key, render_dir, plots=[plot])
         if not written:
             raise HTTPException(
                 404, f"plot {plot!r} has no stored sidecar (cleaning plots are "

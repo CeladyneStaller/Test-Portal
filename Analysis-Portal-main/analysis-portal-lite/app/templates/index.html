@@ -2059,6 +2059,12 @@ function fmtTimestamp(ts) {
   return m ? `${m[1]} ${m[2]}` : ts;
 }
 
+// A run's stable identifier for API calls. bin_id is unique per index entry;
+// sample_name is not, while pre-migration duplicates for the same sample
+// remain, so keying on it would make two rows open the same detail.
+function runKey(r) { return r.bin_id || r.job_id || r.sample_name || ''; }
+
+
 function runKeyValues(run) {
   // Flatten the whitelisted key_values across a run's analysis units.
   const kv = {};
@@ -2082,8 +2088,8 @@ function renderViewRuns(rows) {
     const kv = runKeyValues(r);
     const kvStr = Object.entries(kv).slice(0, 3).map(([k, v]) =>
       `${escapeHtml(k)}=<b>${escapeHtml(fmtNum(v))}</b>`).join(' · ') || '—';
-    return `<tr class="run-row" data-job="${escapeAttr(r.job_id)}"
-        onclick="openRunDetail('${escapeAttr(r.job_id)}')">
+    return `<tr class="run-row" data-job="${escapeAttr(runKey(r))}"
+        onclick="openRunDetail('${escapeAttr(runKey(r))}')">
       <td class="sample-cell">${escapeHtml(r.sample_name || '—')}</td>
       <td>${escapeHtml(r.script || '—')}</td>
       <td class="mono" title="${escapeAttr(runDateTitle(r))}">${escapeHtml(runDateLabel(r))}</td>
@@ -2145,7 +2151,7 @@ async function openRunDetail(jobId) {
       return d;
     })();
     if (_openDetailJob !== jobId) return;  // collapsed while loading
-    dr.querySelector('.run-detail').outerHTML = renderRunDetail(detail);
+    dr.querySelector('.run-detail').outerHTML = renderRunDetail(detail, jobId);
     hydrateThumbs(jobId);
   } catch (e) {
     const el = dr.querySelector('.run-detail');
@@ -2153,13 +2159,13 @@ async function openRunDetail(jobId) {
   }
 }
 
-function renderRunDetail(detail) {
+function renderRunDetail(detail, key) {
   const plots = detail.plots || [];
   // Group plots by analysis bucket.
   const byBucket = {};
   plots.forEach(p => { (byBucket[p.analysis] = byBucket[p.analysis] || []).push(p); });
 
-  const jobId = detail.job_id;
+  const jobId = key || detail.job_id;
   const allRenderable = plots.filter(p => p.renderable).map(p => p.plot);
 
   let html = '<div class="run-detail">';
@@ -2182,7 +2188,7 @@ function renderRunDetail(detail) {
     const renderableInBucket = bucketPlots.filter(p => p.renderable).map(p => p.plot);
 
     const bodyHtml = bucketPlots.map(p =>
-      rdPlotRow(detail, p, anyRenderable)).join('');
+      rdPlotRow(detail, p, anyRenderable, jobId)).join('');
 
     // Every analysis is collapsible now. Buckets with plots start open;
     // buckets with no stored plot data start collapsed.
@@ -2239,17 +2245,18 @@ function plotsFromAttr(s) {
 // One plot row. When the whole analysis has no stored sidecars, the redundant
 // "plot data not stored" thumbnail box is dropped — the analysis header already
 // says so — leaving just the plot's conditions and key values.
-function rdPlotRow(detail, p, bucketHasPlots) {
+function rdPlotRow(detail, p, bucketHasPlots, key) {
   const condStr = Object.entries(p.conditions || {})
     .map(([k, v]) => `${escapeHtml(k)} ${escapeHtml(fmtNum(v))}`).join(' · ');
   const valStr = Object.entries(p.values || {}).map(([k, v]) =>
     `<span class="rd-val">${escapeHtml(k)} <b>${escapeHtml(fmtVal(v))}</b></span>`
   ).join('');
 
+  const runK = key || detail.job_id;
   let thumb = '';
   if (p.renderable) {
     thumb = `<div class="rd-thumb" data-plot="${escapeAttr(p.plot)}"
-                  onclick="openHistoricalPlot('${escapeAttr(detail.job_id)}','${escapeAttr(p.plot)}')">
+                  onclick="openHistoricalPlot('${escapeAttr(runK)}','${escapeAttr(p.plot)}')">
                <span class="thumb-spin">loading…</span></div>`;
   } else if (bucketHasPlots) {
     // Mixed bucket: some plots renderable, this one not — keep the marker so
@@ -2258,11 +2265,11 @@ function rdPlotRow(detail, p, bucketHasPlots) {
                plot data<br>not stored</div>`;
   }
 
-  const selKey = detail.job_id + '::' + p.plot;
+  const selKey = runK + '::' + p.plot;
   const selBtn = p.renderable
     ? `<button class="rd-select ${_viewCompareSel.has(selKey) ? 'on' : ''}"
                data-selkey="${escapeAttr(selKey)}"
-               onclick="toggleViewCompare('${escapeAttr(detail.job_id)}','${escapeAttr(p.plot)}','${escapeAttr(detail.sample_name || '')}')">
+               onclick="toggleViewCompare('${escapeAttr(runK)}','${escapeAttr(p.plot)}','${escapeAttr(detail.sample_name || '')}')">
          ${_viewCompareSel.has(selKey) ? '✓ Selected' : 'Select to compare'}</button>`
     : '';
 
@@ -2330,7 +2337,7 @@ async function hydrateThumbs(jobId) {
         const r = await fetch('/api/view/render', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ job_id: jobId, plot })
+          body: JSON.stringify({ key: jobId, plot })
         });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         url = URL.createObjectURL(await r.blob());
@@ -2355,7 +2362,7 @@ async function openHistoricalPlot(jobId, plot) {
       const r = await fetch('/api/view/render', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_id: jobId, plot })
+        body: JSON.stringify({ key: jobId, plot })
       });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       url = URL.createObjectURL(await r.blob());
@@ -2462,7 +2469,7 @@ async function submitViewComparison(groupingMode) {
     const sel = _viewCompareSel.get(row.dataset.key);
     if (!sel) return;
     selections.push({
-      job_id: sel.job_id,
+      key: sel.job_id,
       plot: sel.plot,
       label: row.querySelector('input[type=text]').value.trim(),
     });

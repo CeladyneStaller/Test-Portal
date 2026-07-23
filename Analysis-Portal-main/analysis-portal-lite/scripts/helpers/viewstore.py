@@ -26,7 +26,11 @@ from typing import Any, Dict, List, Optional
 from scripts.helpers import jsonbin
 from scripts.helpers.record import decode_sidecars
 
-# Detail bins are immutable once written, so they are cached without expiry.
+# Detail bins used to be immutable, which is why this cache has no expiry.
+# Sample-keyed merging makes them mutable: a later run rewrites the same bin.
+# The cache key therefore carries the index entry's timestamp, which advances
+# on every merge — a stale record simply stops being addressable and ages out
+# by LRU, so nothing needs to invalidate it explicitly.
 # 32 x ~360 KB is roughly 11 MB.
 DETAIL_CACHE_SIZE = 32
 
@@ -140,28 +144,51 @@ def index_facets(index: Optional[Dict[str, Any]] = None) -> Dict[str, List[str]]
 #  Detail bins
 # ─────────────────────────────────────────────────────────────────────
 
-def _bin_id_for(job_id: str) -> Optional[str]:
-    for entry in fetch_index().get('runs', []):
-        if entry.get('job_id') == job_id:
-            return entry.get('bin_id')
+def _entry_for(key: str, index: Optional[Dict[str, Any]] = None
+               ) -> Optional[Dict[str, Any]]:
+    """Resolve an index entry from a bin id, sample name, or job id.
+
+    `bin_id` is tried first because it is the only one guaranteed unambiguous.
+    A sample may still have more than one entry — anything written before
+    merging was enabled — and resolving those by sample name would silently
+    hand back whichever is newest, so a caller holding a specific entry gets
+    the bin it actually asked for.
+
+    Resolving through the index also validates the key: an arbitrary bin id
+    cannot be used to read a bin the index does not reference.
+    """
+    runs = (index or fetch_index()).get('runs', [])
+    for field in ('bin_id', 'sample_name', 'job_id'):
+        matches = [e for e in runs if e.get(field) == key]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            # Ambiguous only for sample_name pre-migration; take the newest.
+            matches.sort(key=lambda e: str(e.get('timestamp', '')))
+            return matches[-1]
     return None
 
 
-def fetch_detail(job_id: str) -> Dict[str, Any]:
-    """Fetch one run's detail bin. Cached — detail bins never change."""
-    with _cache_lock:
-        if job_id in _detail_cache:
-            _detail_cache.move_to_end(job_id)
-            return _detail_cache[job_id]
+def fetch_detail(key: str) -> Dict[str, Any]:
+    """Fetch a run's detail bin by bin id, sample name, or job id.
 
-    bin_id = _bin_id_for(job_id)
-    if not bin_id:
-        # Could be a run written before the index existed, or a bad ID. Retry
-        # once against a fresh index in case it was written very recently.
-        fetch_index(force=True)
-        bin_id = _bin_id_for(job_id)
-    if not bin_id:
-        raise KeyError(f'no indexed run with job_id {job_id!r}')
+    Cached against the index entry's timestamp, so a merged bin is re-read
+    rather than served stale.
+    """
+    entry = _entry_for(key)
+    if entry is None:
+        # Could have been written moments ago. Retry once against a fresh index.
+        entry = _entry_for(key, fetch_index(force=True))
+    if entry is None or not entry.get('bin_id'):
+        raise KeyError(f'no indexed run matching {key!r}')
+
+    bin_id = entry['bin_id']
+    cache_key = f"{bin_id}@{entry.get('timestamp', '')}"
+
+    with _cache_lock:
+        if cache_key in _detail_cache:
+            _detail_cache.move_to_end(cache_key)
+            return _detail_cache[cache_key]
 
     payload = jsonbin._request(
         f'{jsonbin._JSONBIN_BASE}/{bin_id}/latest', method='GET')
@@ -170,8 +197,8 @@ def fetch_detail(job_id: str) -> Dict[str, Any]:
         raise RuntimeError(f'detail bin {bin_id} returned no usable record')
 
     with _cache_lock:
-        _detail_cache[job_id] = record
-        _detail_cache.move_to_end(job_id)
+        _detail_cache[cache_key] = record
+        _detail_cache.move_to_end(cache_key)
         while len(_detail_cache) > DETAIL_CACHE_SIZE:
             _detail_cache.popitem(last=False)
     return record
@@ -183,7 +210,7 @@ def cache_stats() -> Dict[str, Any]:
         return {
             'detail_cached': len(_detail_cache),
             'detail_capacity': DETAIL_CACHE_SIZE,
-            'detail_job_ids': list(_detail_cache.keys()),
+            'detail_keys': list(_detail_cache.keys()),
             'index_age_s': (round(time.time() - _index_cache['at'], 1)
                             if _index_cache['data'] is not None else None),
             'index_ttl_s': INDEX_TTL_S,
@@ -201,7 +228,7 @@ def clear_cache() -> None:
 #  Plot inventory
 # ─────────────────────────────────────────────────────────────────────
 
-def run_plots(job_id: str) -> List[Dict[str, Any]]:
+def run_plots(key: str) -> List[Dict[str, Any]]:
     """List a run's plots, flagging which can be re-rendered.
 
     A plot is renderable only if its sidecar was stored. Cleaning sidecars are
@@ -209,7 +236,7 @@ def run_plots(job_id: str) -> List[Dict[str, Any]]:
     cleaning plots appear here with `renderable: False` — their metrics are
     intact, only the plot data is absent.
     """
-    detail = fetch_detail(job_id)
+    detail = fetch_detail(key)
     stored = set(decode_sidecars(detail).keys())
 
     out: List[Dict[str, Any]] = []
@@ -230,7 +257,7 @@ def run_plots(job_id: str) -> List[Dict[str, Any]]:
 #  Materialisation
 # ─────────────────────────────────────────────────────────────────────
 
-def materialize_sidecars(job_id: str, dest_dir: Path,
+def materialize_sidecars(key: str, dest_dir: Path,
                          plots: Optional[List[str]] = None) -> List[str]:
     """Write a run's stored sidecars to disk in analysis-output layout.
 
@@ -242,7 +269,7 @@ def materialize_sidecars(job_id: str, dest_dir: Path,
     not stored are skipped silently; callers should compare against the returned
     list rather than assume.
     """
-    detail = fetch_detail(job_id)
+    detail = fetch_detail(key)
     sidecars = decode_sidecars(detail)
     if plots is not None:
         wanted = set(plots)
@@ -262,35 +289,46 @@ def materialize_for_compare(selections: List[Dict[str, str]],
                             root: Path) -> List[Dict[str, str]]:
     """Stage historical plots for the comparison script.
 
-    `selections` is [{job_id, plot, label?}, ...]. Each run gets its own
-    directory under `root`, mirroring how live jobs are laid out, and the
-    returned list is ready to pass straight through as the comparison script's
-    `sources` parameter.
+    `selections` is [{key, plot, label?}, ...] where `key` identifies a run —
+    a bin id, sample name or job id. `job_id` is still accepted for callers
+    that have not been updated.
 
-    Selections whose sidecar was not stored are omitted from the result.
+    Each run gets its own directory under `root`, mirroring how live jobs are
+    laid out, so the returned list can be passed straight through as the
+    comparison script's `sources` parameter.
+
+    Selections whose sidecar was not stored are omitted.
     """
-    by_job: Dict[str, List[str]] = {}
+    def _key(sel: Dict[str, str]) -> str:
+        return str(sel.get('key') or sel.get('job_id') or '')
+
+    by_run: Dict[str, List[str]] = {}
     for sel in selections:
-        by_job.setdefault(sel['job_id'], []).append(sel['plot'])
+        by_run.setdefault(_key(sel), []).append(sel['plot'])
 
     available: Dict[str, set] = {}
-    for job_id, plots in by_job.items():
-        job_dir = Path(root) / job_id
-        available[job_id] = set(materialize_sidecars(job_id, job_dir, plots))
+    dirs: Dict[str, Path] = {}
+    for i, (key, plots) in enumerate(by_run.items()):
+        # Directory names come from the position rather than the key: a key may
+        # be a sample name, and those contain characters that are awkward on a
+        # filesystem.
+        run_dir = Path(root) / f'run{i}'
+        dirs[key] = run_dir
+        available[key] = set(materialize_sidecars(key, run_dir, plots))
 
     sources: List[Dict[str, str]] = []
     for sel in selections:
-        job_id, plot = sel['job_id'], sel['plot']
-        if plot not in available.get(job_id, set()):
+        key, plot = _key(sel), sel['plot']
+        if plot not in available.get(key, set()):
             continue
-        detail = fetch_detail(job_id)
+        detail = fetch_detail(key)
         sources.append({
-            'job_id': job_id,
+            'job_id': detail.get('job_id', key),
             'label': sel.get('label', ''),
             # The comparison script strips the extension to find the sidecar,
             # so the suffix here is nominal.
             'filename': f'{plot}.png',
-            'output_dir': str(Path(root) / job_id),
+            'output_dir': str(dirs[key]),
             'sample_name': detail.get('sample_name', ''),
         })
     return sources
