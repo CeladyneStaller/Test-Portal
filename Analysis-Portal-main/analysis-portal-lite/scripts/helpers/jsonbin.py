@@ -325,6 +325,55 @@ def write_index_entry(index: Dict[str, Any], entry: Dict[str, Any],
 #  Public entry point
 # ─────────────────────────────────────────────────────────────────────
 
+def fit_record_to_budget(record: Dict[str, Any], sidecars: Dict[str, Any],
+                        protected: Any = frozenset()
+                        ) -> Tuple[Dict[str, Any], Dict[str, Any], List[str], int]:
+    """Attach as many sidecars as the transport limit allows.
+
+    JSONBin's nginx front end rejects oversized bodies with a 413 before the
+    request reaches their application, so the limit has to be enforced here.
+    Excluded buckets go first, then the smallest of what remains are kept until
+    the budget runs out — many light analyses beat one heavy one, and it
+    degrades smoothly rather than all-or-nothing.
+
+    `protected` names sidecars that must be sacrificed last. During a merge
+    that is the incoming run's set, so a fresh measurement never silently
+    fails to store its plots while older data survives (fork D).
+
+    Returns (record, kept, dropped, body_bytes).
+    """
+    attach_sidecars(record, {})
+    base_bytes = len(json.dumps(record, ensure_ascii=False).encode())
+
+    kept, dropped = select_sidecars(
+        sidecars,
+        # The 4x compression estimate is optimistic — the real mixed-content
+        # ratio is nearer 2x — so the loop below corrects any overshoot.
+        budget_bytes=max(0, MAX_BODY_BYTES - base_bytes) * 4,
+        exclude_buckets=SIDECAR_EXCLUDE_BUCKETS)
+
+    attach_sidecars(record, kept)
+    body_bytes = len(json.dumps(record, ensure_ascii=False).encode())
+
+    while body_bytes > MAX_BODY_BYTES and kept:
+        ranked = list(sidecar_sizes(kept))
+        victim = next((n for n in ranked if n not in protected), None)
+        if victim is None:
+            victim = ranked[0]
+        kept.pop(victim)
+        dropped.append(victim)
+        attach_sidecars(record, kept)
+        body_bytes = len(json.dumps(record, ensure_ascii=False).encode())
+
+    if body_bytes > MAX_BODY_BYTES:
+        record = strip_sidecars(
+            record, f'record was {body_bytes:,} B, over the '
+                    f'{MAX_BODY_BYTES:,} B transport limit')
+        body_bytes = len(json.dumps(record, ensure_ascii=False).encode())
+
+    return record, kept, dropped, body_bytes
+
+
 def _plot_bucket_of(sidecar: Dict[str, Any]) -> str:
     from scripts.helpers.record import plot_bucket
     return plot_bucket(sidecar.get('plot_type', 'unknown'))
@@ -455,34 +504,8 @@ def push_job_metrics(*,
 
         base = merge_detail_record(existing_record, record) if existing_record \
             else record
-        attach_sidecars(base, {})
-        base_bytes = len(json.dumps(base, ensure_ascii=False).encode())
-
-        kept, dropped = select_sidecars(
-            merged_sidecars,
-            budget_bytes=max(0, MAX_BODY_BYTES - base_bytes) * 4,
-            exclude_buckets=SIDECAR_EXCLUDE_BUCKETS)
-
-        attach_sidecars(base, kept)
-        body_bytes = len(json.dumps(base, ensure_ascii=False).encode())
-
-        # Trim largest-first, but sacrifice previously-stored sidecars before
-        # any belonging to the run being written.
-        while body_bytes > MAX_BODY_BYTES and kept:
-            ranked = list(sidecar_sizes(kept))
-            victim = next((n for n in ranked if n not in incoming_names), None)
-            if victim is None:
-                victim = ranked[0]
-            kept.pop(victim)
-            dropped.append(victim)
-            attach_sidecars(base, kept)
-            body_bytes = len(json.dumps(base, ensure_ascii=False).encode())
-
-        if body_bytes > MAX_BODY_BYTES:
-            base = strip_sidecars(
-                base, f'record was {body_bytes:,} B, over the '
-                      f'{MAX_BODY_BYTES:,} B transport limit')
-            body_bytes = len(json.dumps(base, ensure_ascii=False).encode())
+        base, kept, dropped, body_bytes = fit_record_to_budget(
+            base, merged_sidecars, protected=incoming_names)
 
         record = base
         out['body_bytes'] = body_bytes
