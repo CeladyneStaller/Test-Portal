@@ -130,8 +130,102 @@ else:
         print(f"{INFO}(checked the most recent 5)")
 
 
-# ── 4. Index round trip ───────────────────────────────────────────
-head("4. Index append round trip" + ("" if WRITE_TEST else " (skipped)"))
+# ── 4. What the entries actually carry ────────────────────────────
+head("4. key_values by run")
+
+J_AT_V = ('j @ 0.7 V', 'j @ 0.65 V', 'j @ 0.6 V', 'j @ 0.5 V', 'j @ 0.4 V')
+
+if not runs:
+    print(f"{INFO}nothing to inspect")
+else:
+    per_key_runs, per_key_units = {}, {}
+    print(f"{'#':>3}  {'timestamp':20} {'units':>5}  key_values present")
+    print("     " + "-" * 88)
+    for i, r in enumerate(runs, start=1):
+        names = set()
+        for d in r.get('Data', []):
+            for k in (d.get('key_values') or {}):
+                names.add(k)
+                per_key_units[k] = per_key_units.get(k, 0) + 1
+        for k in names:
+            per_key_runs[k] = per_key_runs.get(k, 0) + 1
+        shown = ', '.join(sorted(names)) if names else '(none)'
+        if len(shown) > 62:
+            shown = shown[:59] + '…'
+        print(f"{i:>3}  {str(r.get('timestamp',''))[:20]:20} "
+              f"{len(r.get('Data', [])):>5}  {shown}")
+
+    print(f"\n{'key':22} {'runs':>5} {'units':>6}")
+    print("     " + "-" * 34)
+    for k in sorted(per_key_units, key=lambda x: (-per_key_runs.get(x, 0), x)):
+        print(f"{k:22} {per_key_runs.get(k,0):>5} {per_key_units[k]:>6}")
+
+    # The specific question: did the current-density-at-voltage keys land?
+    newest = runs[-1]
+    newest_keys = {k for d in newest.get('Data', [])
+                   for k in (d.get('key_values') or {})}
+    have = [k for k in J_AT_V if k in newest_keys]
+    n_runs_with = sum(1 for r in runs
+                      if any(k in J_AT_V
+                             for d in r.get('Data', [])
+                             for k in (d.get('key_values') or {})))
+    print()
+    if have:
+        print(f"{OK}j@V present in the most recent run: {', '.join(have)}")
+        print(f"{INFO}({n_runs_with} of {len(runs)} run(s) in the index carry them —")
+        print(f"{INFO} runs analysed before the change will not)")
+    else:
+        print(f"{BAD}j@V keys ABSENT from the most recent run")
+        print(f"{INFO}Expected any of: {', '.join(J_AT_V)}")
+
+
+# ── 5. Which half is deployed? ────────────────────────────────────
+head("5. Deployment cross-check (most recent run)")
+
+if not runs:
+    print(f"{INFO}nothing to check")
+else:
+    newest = runs[-1]
+    bid = newest.get('bin_id')
+    idx_has = any(k in J_AT_V for d in newest.get('Data', [])
+                  for k in (d.get('key_values') or {}))
+    sum_has = None
+    try:
+        payload = jsonbin._request(
+            f"{jsonbin._JSONBIN_BASE}/{bid}/latest", method='GET')
+        rec = payload.get('record') or {}
+        rows = rec.get('summary') or []
+        sum_has = any(str(k).startswith('j_at_')
+                      for row in rows if isinstance(row, dict) for k in row)
+        n_pol = len((rec.get('metrics') or {}).get('polcurve', {}))
+        print(f"{INFO}detail bin {bid}")
+        print(f"{INFO}  polcurve plots: {n_pol}   summary rows: {len(rows)}")
+    except Exception as e:
+        print(f"{BAD}could not read the detail bin: {str(e)[:90]}")
+
+    print(f"{INFO}  summary carries j_at_* : "
+          f"{'yes' if sum_has else 'no' if sum_has is not None else '?'}")
+    print(f"{INFO}  index carries  j @ * V : {'yes' if idx_has else 'no'}")
+    print()
+    if sum_has and idx_has:
+        print(f"{OK}analysis scripts and record.py are both deployed and working")
+    elif sum_has and not idx_has:
+        print(f"{BAD}scripts emit j_at_* but the index does not promote it")
+        print(f"{INFO}record.py on the server is missing the j@V whitelist "
+              f"entries — deploy scripts/helpers/record.py")
+    elif sum_has is False and not idx_has:
+        print(f"{BAD}the run's summary has no j_at_* keys at all")
+        print(f"{INFO}The polcurve scripts on the server are the old version, "
+              f"or this run predates the change.")
+        print(f"{INFO}Deploy polcurve_analysis.py, polcurve_analysis_down.py "
+              f"and polcurve_analysis_hfr_compare.py, then re-run an analysis.")
+    elif not sum_has and idx_has:
+        print(f"{INFO}index has j@V without a summary source — values came from "
+              f"parsed plot annotations rather than tier 1.")
+
+
+# ── 6. Index round trip ───────────────────────────────────────────
+head("6. Index append round trip" + ("" if WRITE_TEST else " (skipped)"))
 
 if not WRITE_TEST:
     print(f"{INFO}Read-only by default. Re-run with --write-test to append a")
