@@ -835,3 +835,204 @@ def detail_bin_name(detail_record: Dict[str, Any], script_short: str = '') -> st
              detail_record.get('timestamp', '')]
     name = '-'.join(p for p in parts if p)
     return name[:128]
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Merging — sample-keyed overwrite
+# ═══════════════════════════════════════════════════════════════════
+#
+# Pure functions. Nothing here talks to JSONBin; transport is phase 3.
+#
+# The rule, from OVERWRITE_SCOPE.md §1: replace at (analysis, step)
+# granularity, preserve anything untouched. Both cases follow from it —
+# crossover-then-Full-Analysis and Full-Analysis-then-crossover — because in
+# each the incoming record declares which (analysis, step) pairs it covers, and
+# only those are displaced.
+#
+# Steps are the identity. This is safe only because steps now parse reliably
+# for both naming conventions; before that fix, b21b through b24b all yielded
+# no step and would have merged into one another.
+
+
+def _plot_step(entry: Dict[str, Any]) -> str:
+    return str((entry.get('conditions') or {}).get('step') or '')
+
+
+def touched_units(record: Dict[str, Any]) -> Set[Tuple[str, str]]:
+    """The (analysis, step) pairs a record covers.
+
+    This is what an incoming record displaces when merged into an existing one.
+    """
+    out: Set[Tuple[str, str]] = set()
+    for bucket, plots in (record.get('metrics') or {}).items():
+        for entry in plots.values():
+            out.add((bucket, _plot_step(entry)))
+    return out
+
+
+def _annotate_summary_rows(record: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Tag each summary row with the (Analysis, step) it belongs to.
+
+    Rows carry a Label but not always an Analysis — the Full Analysis
+    orchestrator stamps one, the standalone scripts do not. The bucket is
+    recovered the same way `_rows_for_unit` does it: by finding the plot whose
+    name contains the row's label.
+    """
+    metrics = record.get('metrics') or {}
+    rows = record.get('summary') or []
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get('Label') or row.get('label') or '')
+        bucket = row.get('Analysis') or ''
+        step = ''
+        for b, plots in metrics.items():
+            for plot_name, entry in plots.items():
+                if label and label in plot_name:
+                    bucket = bucket or b
+                    step = _plot_step(entry)
+                    break
+            if step:
+                break
+        if not bucket and len(metrics) == 1:
+            bucket = next(iter(metrics))       # unambiguous single-bucket run
+        if not step and label:
+            step = str(parse_conditions(label).get('step') or '')
+        out.append({'_bucket': bucket, '_step': step, 'row': row})
+    return out
+
+
+def merge_detail_record(existing: Optional[Dict[str, Any]],
+                        incoming: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge a new run into a sample's accumulated detail record.
+
+    Everything the incoming record covers is replaced; everything else is kept.
+    Applied identically to metrics, summary and sidecars so the three cannot
+    drift apart.
+
+    `input_files` accumulates as a deduplicated union — worth watching, since a
+    sample analysed repeatedly will grow it, and it competes with sidecars for
+    the transport budget.
+    """
+    if not existing:
+        merged = json.loads(json.dumps(incoming))
+        merged['jobs'] = [{
+            'job_id': incoming.get('job_id', ''),
+            'timestamp': incoming.get('timestamp', ''),
+            'buckets': sorted((incoming.get('metrics') or {}).keys()),
+        }]
+        return merged
+
+    touched = touched_units(incoming)
+    merged = json.loads(json.dumps(existing))
+
+    # ── metrics ──
+    old_metrics = merged.get('metrics') or {}
+    kept: Dict[str, Dict[str, Any]] = {}
+    for bucket, plots in old_metrics.items():
+        survivors = {name: e for name, e in plots.items()
+                     if (bucket, _plot_step(e)) not in touched}
+        if survivors:
+            kept[bucket] = survivors
+    for bucket, plots in (incoming.get('metrics') or {}).items():
+        kept.setdefault(bucket, {}).update(json.loads(json.dumps(plots)))
+    merged['metrics'] = kept
+
+    # ── summary ──
+    surviving_rows = [a['row'] for a in _annotate_summary_rows(existing)
+                      if (a['_bucket'], a['_step']) not in touched]
+    merged['summary'] = surviving_rows + list(incoming.get('summary') or [])
+    if not merged['summary']:
+        merged.pop('summary', None)
+
+    # ── sidecars ──
+    old_sc = decode_sidecars(existing)
+    new_sc = decode_sidecars(incoming)
+    sc_kept: Dict[str, Any] = {}
+    for name, sc in old_sc.items():
+        bucket = plot_bucket(sc.get('plot_type', 'unknown'))
+        step = str(parse_conditions(name).get('step') or '')
+        if (bucket, step) not in touched:
+            sc_kept[name] = sc
+    sc_kept.update(new_sc)
+    attach_sidecars(merged, sc_kept)
+    # A size-driven omission on a previous write says nothing about the merged
+    # result; transport re-evaluates it.
+    merged.pop('sidecars_omitted', None)
+
+    # ── top-level conditions, recomputed over the merged set ──
+    sets = []
+    for plots in merged['metrics'].values():
+        for e in plots.values():
+            c = e.get('conditions') or {}
+            if c:
+                sets.append(json.dumps(c, sort_keys=True))
+    merged['conditions'] = (json.loads(sets[0])
+                            if sets and len(set(sets)) == 1 else None)
+
+    # ── provenance ──
+    merged['schema'] = SCHEMA_VERSION
+    merged['job_id'] = incoming.get('job_id', '')     # last writer
+    merged['timestamp'] = incoming.get('timestamp', '')
+    merged['script'] = incoming.get('script', merged.get('script', ''))
+    merged['sample_name'] = (incoming.get('sample_name')
+                             or merged.get('sample_name', ''))
+    files = list(merged.get('input_files') or [])
+    for f in (incoming.get('input_files') or []):
+        if f not in files:
+            files.append(f)
+    merged['input_files'] = files
+    # An existing record always represents at least one job, but records
+    # written before this field existed — which is all of them — carry no
+    # `jobs` list. Seed it from the record's own identity so merging does not
+    # erase the provenance of whatever was already there.
+    jobs = list(merged.get('jobs') or [])
+    if not jobs:
+        jobs = [{'job_id': existing.get('job_id', ''),
+                 'timestamp': existing.get('timestamp', ''),
+                 'buckets': sorted((existing.get('metrics') or {}).keys())}]
+    jobs.append({'job_id': incoming.get('job_id', ''),
+                 'timestamp': incoming.get('timestamp', ''),
+                 'buckets': sorted((incoming.get('metrics') or {}).keys())})
+    merged['jobs'] = jobs
+    return merged
+
+
+def merge_index_entry(existing: Optional[Dict[str, Any]],
+                      incoming: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge a new run's index entry into a sample's accumulated entry.
+
+    Units are replaced on (Analysis, step) — the same rule the detail record
+    uses, so the index cannot disagree with the bin it points at.
+
+    `job_id` becomes the last writer rather than the only one, with `n_jobs`
+    alongside (fork B). `script` likewise reflects the last writer: for a
+    sample-keyed entry it is no longer a property of the sample, and a run that
+    began as a Full Analysis may later be topped up by a standalone crossover.
+    """
+    if not existing:
+        out = json.loads(json.dumps(incoming))
+        out['n_jobs'] = 1
+        return out
+
+    merged = json.loads(json.dumps(existing))
+    incoming_units = {(u.get('Analysis', ''), u.get('step', ''))
+                      for u in (incoming.get('Data') or [])}
+    survivors = [u for u in (merged.get('Data') or [])
+                 if (u.get('Analysis', ''), u.get('step', '')) not in incoming_units]
+    merged['Data'] = survivors + list(incoming.get('Data') or [])
+
+    merged['job_id'] = incoming.get('job_id', '')
+    merged['n_jobs'] = int(merged.get('n_jobs') or 1) + 1
+    merged['timestamp'] = incoming.get('timestamp', '')
+    merged['script'] = incoming.get('script', merged.get('script', ''))
+    merged['sample_name'] = (incoming.get('sample_name')
+                             or merged.get('sample_name', ''))
+    merged['bin_id'] = incoming.get('bin_id') or merged.get('bin_id', '')
+    run_date = incoming.get('run_date') or merged.get('run_date')
+    if run_date:
+        merged['run_date'] = run_date
+    else:
+        merged.pop('run_date', None)
+    return merged

@@ -17,6 +17,7 @@ from scripts.helpers.record import (  # noqa: E402
     build_detail_record, build_index_entry, detail_bin_name,
     parse_conditions, parse_metric_kv, plot_bucket, build_key_values,
     is_comparison_script, load_sidecars, decode_sidecars, strip_sidecars,
+    parse_run_date, merge_detail_record, merge_index_entry, touched_units,
     KEY_VALUE_UNITS,
     select_sidecars, sidecar_bucket_sizes, sidecar_sizes, attach_sidecars,
     SCHEMA_VERSION, SIDECAR_ENCODING,
@@ -167,6 +168,19 @@ check('date prefix and sample name are not steps',
       parse_conditions('polcurve_260126_FCS6_IV_80C.png').get('step'), None)
 check('multi-letter fragment is not a step',
       parse_conditions('ocv_260511_Gen2-260506_OCV_80C_100RH.png').get('step'), None)
+
+print("run_date")
+for name, want in (("260421_GSMA-Qual-1", "2026-04-21"),
+                   ("260511_Gen2-260506", "2026-05-11"),   # anchored: not 05-06
+                   ("260407_BM1-Qual1", "2026-04-07"),
+                   ("260126_FCS6", "2026-01-26"),
+                   ("260421", "2026-04-21")):
+    check(f'run_date {name}', parse_run_date(name), want)
+# Not a date, or not recoverable — must return None so the consumer can fall
+# back to the analysis timestamp knowingly.
+for name in ("NoDatePrefix-Cell7", "269999_Bad", "123456_X", "260230_BadDay",
+             "2604211_TooLong", "", None):
+    check(f'run_date rejects {name!r}', parse_run_date(name), None)
 
 print("plot_bucket")
 for pt, want in (('polcurve_down', 'polcurve'), ('ir_correction', 'polcurve'),
@@ -473,6 +487,28 @@ try:
 finally:
     shutil.rmtree(tmp)
 
+print("run_date on the index entry")
+tmp = tempfile.mkdtemp()
+try:
+    out = write_fixtures(tmp, ['polcurve_b14_IV_80C_100RH_0o3V_0o2H2_0o2Air_0kPa'])
+    rec = build_detail_record(
+        job_id='jd', sample_name='260421_GSMA-Qual-1',
+        script='FC Polarization Curve', timestamp='2026-07-22T22:26:04Z',
+        input_files=[], output_dir=out)
+    idx = build_index_entry(rec, 'bind')
+    check('run_date emitted', idx.get('run_date'), '2026-04-21')
+    check('analysis timestamp preserved', idx.get('timestamp'),
+          '2026-07-22T22:26:04Z')
+
+    rec2 = build_detail_record(
+        job_id='jd2', sample_name='NoDatePrefix-Cell7',
+        script='FC Polarization Curve', timestamp='2026-07-22T22:26:04Z',
+        input_files=[], output_dir=out)
+    idx2 = build_index_entry(rec2, 'bind2')
+    check_true('run_date omitted when unrecoverable', 'run_date' not in idx2)
+finally:
+    shutil.rmtree(tmp)
+
 print("Conditions trim")
 tmp = tempfile.mkdtemp()
 try:
@@ -607,6 +643,99 @@ try:
     check('missing dir tolerated', rec2['metrics'], {})
 finally:
     shutil.rmtree(tmp)
+
+print("merge — detail record")
+
+def _mk(plots, job, ts, script='X', sample='260421_GSMA-Qual-1'):
+    """A detail record from a set of (plot_name, plot_type, readout) triples."""
+    tmp = tempfile.mkdtemp()
+    try:
+        d = Path(tmp) / 'o' / '_plot_data'
+        d.mkdir(parents=True)
+        for name, pt, txt in plots:
+            (d / f'{name}.json').write_text(json.dumps(sidecar(pt, [txt] if txt else [])))
+        return build_detail_record(
+            job_id=job, sample_name=sample, script=script, timestamp=ts,
+            input_files=[f'{job}.csv'], output_dir=Path(tmp) / 'o')
+    finally:
+        shutil.rmtree(tmp)
+
+XO = lambda st: (f'crossover_{st}_G_H2X_80.3Cell-100RH_0.4WH2-0.4WN2',
+                 'crossover', '|j_xover| = 1.2 mA/cm2')
+PC = lambda st: (f'polcurve_{st}_G_PolarizationCurve_80.3Cell-95RH_0.2WH2-0.2WA',
+                 'polcurve', 'OCV = 0.95 V')
+EI = lambda st: (f'eis_{st}_G_GEIS_80.3Cell-100RH_0.05WH2', 'eis', None)
+
+check('touched_units reads (analysis, step)',
+      touched_units(_mk([XO('a6'), PC('b17b')], 'j', 't')),
+      {('crossover', 'a6'), ('polcurve', 'b17b')})
+
+# Case 2.1 — crossover exists, then Full Analysis covering one of its steps.
+first = _mk([XO('a6'), XO('b28b')], 'job-1', '2026-07-20T10:00:00Z')
+second = _mk([PC('b17b'), EI('a12'), XO('a6')], 'job-2', '2026-07-23T10:00:00Z')
+m = merge_detail_record(first, second)
+check('2.1 untouched step survives', ('crossover', 'b28b') in touched_units(m), True)
+check('2.1 covered step replaced', ('crossover', 'a6') in touched_units(m), True)
+check('2.1 new buckets added',
+      sorted(m['metrics'].keys()), ['crossover', 'eis', 'polcurve'])
+check('2.1 crossover holds both steps', len(m['metrics']['crossover']), 2)
+
+# Case 2.2 — Full Analysis exists, then a standalone crossover.
+full = _mk([PC('b17b'), PC('c6'), EI('a12'), XO('a6'), XO('b28b')],
+           'job-3', '2026-07-23T10:00:00Z')
+xo = _mk([XO('a6')], 'job-4', '2026-07-24T09:00:00Z', script='H2 Crossover')
+m2 = merge_detail_record(full, xo)
+check('2.2 nothing else disturbed', touched_units(m2), touched_units(full))
+check('2.2 polcurve intact', len(m2['metrics']['polcurve']), 2)
+check('2.2 eis intact', len(m2['metrics']['eis']), 1)
+check('2.2 sidecars follow the same rule', len(decode_sidecars(m2)), 5)
+
+# Provenance must survive records written before the `jobs` field existed.
+chain = merge_detail_record(merge_detail_record(first, second), xo)
+check('provenance accumulates',
+      [j['job_id'] for j in chain['jobs']], ['job-1', 'job-2', 'job-4'])
+check('input_files union deduped',
+      sorted(chain['input_files']), ['job-1.csv', 'job-2.csv', 'job-4.csv'])
+check_true('stale size-omission marker cleared',
+           'sidecars_omitted' not in chain)
+
+# First write for a sample: nothing to merge into.
+solo = merge_detail_record(None, first)
+check('first write seeds provenance',
+      [j['job_id'] for j in solo['jobs']], ['job-1'])
+
+print("merge — index entry")
+
+def _ent(job, ts, units, bin_id='BIN', script='Fuel Cell Full Analysis'):
+    return {'job_id': job, 'sample_name': '260421_GSMA-Qual-1', 'script': script,
+            'timestamp': ts, 'bin_id': bin_id, 'run_date': '2026-04-21',
+            'Data': [{'Analysis': a, 'step': st,
+                      **({'key_values': kv} if kv else {})} for a, st, kv in units]}
+
+# The live duplicate: a degraded push then its retry.
+e1 = _ent('j1', '2026-07-22T21:58:41Z',
+          [('polcurve', 'b17b', {'OCV': 0.95}), ('cleaning', 'a4', None)])
+e2 = _ent('j2', '2026-07-22T22:26:04Z',
+          [('polcurve', 'b17b', {'OCV': 0.951}), ('cleaning', 'a4', None)])
+me = merge_index_entry(e1, e2)
+check('duplicate collapses to one set of units', len(me['Data']), 2)
+check('retry value wins',
+      [u['key_values']['OCV'] for u in me['Data'] if u['Analysis'] == 'polcurve'][0],
+      0.951)
+check('job_id is the last writer', me['job_id'], 'j2')
+check('n_jobs counts contributors', me['n_jobs'], 2)
+check('run_date is a property of the sample', me['run_date'], '2026-04-21')
+
+# Additive: a new step is added rather than replacing.
+e3 = _ent('j3', '2026-07-24T09:00:00Z',
+          [('crossover', 'b39b', {'|j_xover|': 1.4})], script='H2 Crossover')
+ma = merge_index_entry(me, e3)
+check('new step appended', len(ma['Data']), 3)
+check('script reflects the last writer', ma['script'], 'H2 Crossover')
+check('n_jobs increments again', ma['n_jobs'], 3)
+
+first_entry = merge_index_entry(None, e1)
+check('first entry gets n_jobs 1', first_entry['n_jobs'], 1)
 
 print(f"\n{_passed} passed, {_failed} failed")
 sys.exit(1 if _failed else 0)
