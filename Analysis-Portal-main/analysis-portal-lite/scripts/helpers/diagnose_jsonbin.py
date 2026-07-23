@@ -214,11 +214,25 @@ else:
         print(f"{INFO}record.py on the server is missing the j@V whitelist "
               f"entries — deploy scripts/helpers/record.py")
     elif sum_has is False and not idx_has:
-        print(f"{BAD}the run's summary has no j_at_* keys at all")
-        print(f"{INFO}The polcurve scripts on the server are the old version, "
-              f"or this run predates the change.")
-        print(f"{INFO}Deploy polcurve_analysis.py, polcurve_analysis_down.py "
-              f"and polcurve_analysis_hfr_compare.py, then re-run an analysis.")
+        n_rows = 0
+        try:
+            n_rows = len(rec.get('summary') or [])
+        except Exception:
+            pass
+        if n_rows == 0:
+            print(f"{BAD}the detail bin has NO summary at all (0 rows)")
+            print(f"{INFO}For a Fuel Cell Full Analysis this means "
+                  f"fuelcell_analysis.py is the old version: it has its own "
+                  f"orchestrator and does not call the standalone scripts' "
+                  f"run(), so it emits no tier 1 summary.")
+            print(f"{INFO}Deploy fuelcell_analysis.py together with the three "
+                  f"polcurve scripts, then re-run an analysis.")
+        else:
+            print(f"{BAD}summary has {n_rows} row(s) but no j_at_* keys")
+            print(f"{INFO}The polcurve scripts on the server are the old "
+                  f"version, or this run predates the change. Deploy "
+                  f"polcurve_analysis.py, polcurve_analysis_down.py and "
+                  f"polcurve_analysis_hfr_compare.py.")
     elif not sum_has and idx_has:
         print(f"{INFO}index has j@V without a summary source — values came from "
               f"parsed plot annotations rather than tier 1.")

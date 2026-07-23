@@ -418,13 +418,47 @@ def _scalar(v: Any) -> Optional[float]:
     return None
 
 
+def _rows_for_unit(summary: Optional[Any], bucket: str,
+                   plot_names: List[str]) -> List[Dict[str, Any]]:
+    """Summary rows belonging to one analysis unit.
+
+    A batch run produces one summary row per input file, and an index entry has
+    one unit per (analysis, step, conditions). Without this matching, flattening
+    every row together makes the first file's values stand in for all of them —
+    so a five-polcurve Full Analysis would report the same OCV and j@V under
+    every step. Rows are matched by label appearing in one of the unit's plot
+    names, which is how the analysis scripts construct those names.
+    """
+    rows = summary if isinstance(summary, list) else ([summary] if summary else [])
+    matched: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_bucket = row.get('Analysis')
+        if row_bucket and row_bucket != bucket:
+            continue
+        label = str(row.get('Label') or row.get('label') or '')
+        if label and any(label in pn for pn in plot_names):
+            matched.append(row)
+    if matched:
+        return matched
+
+    # No label matched. A single candidate row for this bucket is unambiguous —
+    # a one-file run whose label simply does not appear in the plot name — so
+    # use it. With several candidates there is no way to tell which belongs
+    # here, and guessing would reintroduce the misattribution this exists to
+    # prevent, so report nothing.
+    candidates = [r for r in rows if isinstance(r, dict)
+                  and (not r.get('Analysis') or r.get('Analysis') == bucket)]
+    return candidates if len(candidates) == 1 else []
+
+
 def _summary_lookup(summary: Optional[Any]) -> Dict[str, Any]:
-    """Flatten caller-supplied summary rows into one key -> value map.
+    """Flatten summary rows into one key -> value map.
 
     Accepts a list of row dicts (the shape run_batch already builds) or a single
-    dict. Later rows do not overwrite earlier ones, so with multiple files the
-    first file's values win — the index is a routing aid, and drill-down to the
-    detail bin gives per-file precision.
+    dict. Earlier rows win, so this is only unambiguous once rows have been
+    narrowed to a single analysis unit by _rows_for_unit.
     """
     flat: Dict[str, Any] = {}
     if not summary:
@@ -608,7 +642,7 @@ def build_detail_record(*, job_id: str, sample_name: Optional[str], script: str,
 # ─────────────────────────────────────────────────────────────────────
 
 def _analysis_units(metrics: Dict[str, Dict[str, Any]],
-                    summary_flat: Dict[str, Any]) -> List[Dict[str, Any]]:
+                    summary: Optional[Any] = None) -> List[Dict[str, Any]]:
     """Collapse plots into distinct (Analysis, step, Conditions) units.
 
     Several plots from one characterization at one setpoint — say a polcurve and
@@ -618,15 +652,17 @@ def _analysis_units(metrics: Dict[str, Dict[str, Any]],
     order: List[Tuple[str, str, str]] = []
 
     for bucket, plots in metrics.items():
-        for _, entry in plots.items():
+        for plot_name, entry in plots.items():
             conditions = dict(entry.get('conditions') or {})
             step = conditions.pop('step', '')
             key = (bucket, step, json.dumps(conditions, sort_keys=True))
             if key not in grouped:
                 grouped[key] = {'Analysis': bucket, 'step': step,
-                                'Conditions': conditions, '_values': {}}
+                                'Conditions': conditions, '_values': {},
+                                '_plots': []}
                 order.append(key)
             grouped[key]['_values'].update(entry.get('values') or {})
+            grouped[key]['_plots'].append(plot_name)
 
     built: List[Dict[str, Any]] = []
     for key in order:
@@ -636,7 +672,11 @@ def _analysis_units(metrics: Dict[str, Dict[str, Any]],
             'step': g['step'],
             'Conditions': g['Conditions'],
         }
-        kv = build_key_values(g['Analysis'], g['_values'], summary_flat)
+        # Narrow the summary to this unit before flattening, so each step
+        # reports its own file's values rather than the first file's.
+        rows = _rows_for_unit(summary, g['Analysis'], g['_plots'])
+        kv = build_key_values(g['Analysis'], g['_values'],
+                              _summary_lookup(rows))
         if kv:
             unit['key_values'] = kv
         built.append(unit)
@@ -660,14 +700,14 @@ def build_index_entry(detail_record: Dict[str, Any], bin_id: str) -> Dict[str, A
     Analysis run spanning several characterizations and setpoints is represented
     without collapsing them to a single arbitrary value.
     """
-    summary_flat = _summary_lookup(detail_record.get('summary'))
     return {
         'job_id': detail_record.get('job_id', ''),
         'sample_name': detail_record.get('sample_name', ''),
         'script': detail_record.get('script', ''),
         'timestamp': detail_record.get('timestamp', ''),
         'bin_id': bin_id,
-        'Data': _analysis_units(detail_record.get('metrics', {}), summary_flat),
+        'Data': _analysis_units(detail_record.get('metrics', {}),
+                                detail_record.get('summary')),
     }
 
 

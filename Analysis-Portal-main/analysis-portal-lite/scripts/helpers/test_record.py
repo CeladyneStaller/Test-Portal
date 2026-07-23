@@ -16,8 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.helpers.record import (  # noqa: E402
     build_detail_record, build_index_entry, detail_bin_name,
     parse_conditions, parse_metric_kv, plot_bucket, build_key_values,
-    is_comparison_script, load_sidecars,
-    SCHEMA_VERSION,
+    is_comparison_script, load_sidecars, decode_sidecars, strip_sidecars,
+    KEY_VALUE_UNITS,
+    select_sidecars, sidecar_bucket_sizes, sidecar_sizes, attach_sidecars,
+    SCHEMA_VERSION, SIDECAR_ENCODING,
 )
 
 _passed = 0
@@ -164,6 +166,24 @@ check('small magnitude preserved', build_key_values(
 check('crossover raw results key accepted',
       build_key_values('crossover', {}, {'j_xover_mA_cm2': 1.2}),
       {'|j_xover|': 1.2})
+# Current density at fixed voltages: promoted from the summary, sparse by
+# design. A missing key must mean "curve did not reach that voltage", so the
+# whitelist must never invent one.
+check('j@V promoted from summary',
+      build_key_values('polcurve', {}, {'j_at_0.65V': 0.8641009}),
+      {'j @ 0.65 V': 0.864101})
+check('all five j@V targets promoted',
+      sorted(build_key_values('polcurve', {}, {
+          'j_at_0.7V': 0.70, 'j_at_0.65V': 0.86, 'j_at_0.6V': 1.02,
+          'j_at_0.5V': 1.34, 'j_at_0.4V': 1.66}).keys()),
+      ['j @ 0.4 V', 'j @ 0.5 V', 'j @ 0.6 V', 'j @ 0.65 V', 'j @ 0.7 V'])
+check('absent j@V targets stay absent',
+      sorted(build_key_values('polcurve', {}, {
+          'j_at_0.7V': 0.70, 'j_at_0.65V': 0.86}).keys()),
+      ['j @ 0.65 V', 'j @ 0.7 V'])
+check('j@V units documented',
+      [KEY_VALUE_UNITS.get(f'j @ {v:g} V') for v in (0.7, 0.65, 0.6, 0.5, 0.4)],
+      ['A/cm²'] * 5)
 check('ecsa from summary only',
       build_key_values('ecsa', {'RF': 12.1}, {'average_ECSA_m2_per_g': 44.4}),
       {'Average ECSA': 44.4})
@@ -363,6 +383,135 @@ try:
           b14[0]['key_values']['OCV'], 0.95)
 finally:
     shutil.rmtree(tmp)
+
+print("per-unit summary matching")
+tmp = tempfile.mkdtemp()
+try:
+    # Two polcurves at different steps, each with its own summary row. Before
+    # label matching, both units reported the first row's values.
+    d = Path(tmp) / 'output' / '_plot_data'
+    d.mkdir(parents=True)
+    for step, ocv in (('b17', 0.910), ('b20', 0.880)):
+        (d / f'polcurve_{step}_IV_80C_95RH.json').write_text(json.dumps(
+            sidecar('polcurve')))
+    rec = build_detail_record(
+        job_id='jm', sample_name='GSMA-1', script='Fuel Cell Full Analysis',
+        timestamp='t', input_files=[], output_dir=Path(tmp) / 'output',
+        summary=[
+            {'Label': 'b17_IV_80C_95RH', 'Analysis': 'polcurve',
+             'OCV': 0.910, 'j_at_0.65V': 0.86},
+            {'Label': 'b20_IV_80C_95RH', 'Analysis': 'polcurve',
+             'OCV': 0.880, 'j_at_0.65V': 0.70},
+        ])
+    idx = build_index_entry(rec, 'binm')
+    by_step = {u['step']: (u.get('key_values') or {}) for u in idx['Data']}
+    check('b17 gets its own OCV', by_step.get('b17', {}).get('OCV'), 0.91)
+    check('b20 gets its own OCV', by_step.get('b20', {}).get('OCV'), 0.88)
+    check('b17 gets its own j@V', by_step.get('b17', {}).get('j @ 0.65 V'), 0.86)
+    check('b20 gets its own j@V', by_step.get('b20', {}).get('j @ 0.65 V'), 0.70)
+    check_true('units are not identical',
+               by_step.get('b17') != by_step.get('b20'))
+
+    # A single unmatched row is unambiguous and still applies.
+    rec2 = build_detail_record(
+        job_id='js', sample_name='s', script='FC Polarization Curve',
+        timestamp='t', input_files=[], output_dir=Path(tmp) / 'output',
+        summary=[{'Label': 'totally-different-name', 'OCV': 0.77}])
+    idx2 = build_index_entry(rec2, 'bins')
+    check_true('lone unmatched row still applied',
+               any((u.get('key_values') or {}).get('OCV') == 0.77
+                   for u in idx2['Data']))
+
+    # Several unmatched rows are ambiguous — refuse rather than misattribute.
+    rec3 = build_detail_record(
+        job_id='ja', sample_name='s', script='Fuel Cell Full Analysis',
+        timestamp='t', input_files=[], output_dir=Path(tmp) / 'output',
+        summary=[{'Label': 'nope-one', 'OCV': 0.11},
+                 {'Label': 'nope-two', 'OCV': 0.22}])
+    idx3 = build_index_entry(rec3, 'bina')
+    check_true('ambiguous rows are not guessed',
+               all('OCV' not in (u.get('key_values') or {}) for u in idx3['Data']))
+finally:
+    shutil.rmtree(tmp)
+
+print("sidecar compression")
+tmp = tempfile.mkdtemp()
+try:
+    out = write_fixtures(tmp, list(FIXTURES.keys()))
+    comp = build_detail_record(
+        job_id='jz', sample_name='s', script='FC Polarization Curve',
+        timestamp='t', input_files=[], output_dir=out)
+    plain = build_detail_record(
+        job_id='jz', sample_name='s', script='FC Polarization Curve',
+        timestamp='t', input_files=[], output_dir=out,
+        compress_sidecars=False)
+
+    check('compressed by default', comp['sidecars']['encoding'],
+          SIDECAR_ENCODING)
+    check_true('carries plot count', comp['sidecars']['n_plots'] > 0)
+    check('round-trip lossless', decode_sidecars(comp), plain['sidecars'])
+    check('plain form decodes too', decode_sidecars(plain), plain['sidecars'])
+    check('no sidecars decodes to empty', decode_sidecars({'schema': 2}), {})
+    check_true('compression shrinks the record',
+               len(json.dumps(comp, ensure_ascii=False).encode())
+               < len(json.dumps(plain, ensure_ascii=False).encode()))
+
+    stripped = strip_sidecars(comp, 'too big')
+    check_true('strip removes sidecars', 'sidecars' not in stripped)
+    check('strip records why', stripped['sidecars_omitted'], 'too big')
+    check_true('strip keeps metrics', bool(stripped['metrics']))
+    check_true('strip keeps conditions key', 'conditions' in stripped)
+finally:
+    shutil.rmtree(tmp)
+
+print("sidecar selection")
+SC = {
+    'cleaning_cycles_a4': {'plot_type': 'cleaning_cycles',
+                           'data': {'axes': [{'lines': [{'y': list(range(400))}]}]}},
+    'cleaning_diag_a4': {'plot_type': 'cleaning_diagnostics',
+                         'data': {'axes': [{'lines': [{'y': list(range(300))}]}]}},
+    'polcurve_b14': {'plot_type': 'polcurve',
+                     'data': {'axes': [{'lines': [{'y': [1, 2, 3]}]}]}},
+    'eis_b14': {'plot_type': 'eis',
+                'data': {'axes': [{'lines': [{'y': [1, 2]}]}]}},
+}
+buckets = sidecar_bucket_sizes(SC)
+check('buckets accounted', sorted(buckets), ['cleaning', 'eis', 'polcurve'])
+check_true('cleaning is largest', list(buckets)[0] == 'cleaning')
+check_true('sizes ranked descending',
+           list(sidecar_sizes(SC).values()) == sorted(
+               sidecar_sizes(SC).values(), reverse=True))
+
+kept, dropped = select_sidecars(SC, budget_bytes=10**9,
+                                exclude_buckets={'cleaning'})
+check('cleaning excluded by bucket', sorted(kept), ['eis_b14', 'polcurve_b14'])
+check('both cleaning plots dropped', len(dropped), 2)
+
+kept, dropped = select_sidecars(SC, budget_bytes=10**9, exclude_buckets=set())
+check('nothing excluded when set empty', len(kept), 4)
+check('nothing dropped', dropped, [])
+
+# Budget retention keeps the smallest first, so a tight budget buys the most
+# plots rather than one heavy one.
+kept, dropped = select_sidecars(SC, budget_bytes=200, exclude_buckets=set())
+check_true('small plots survive a tight budget',
+           'eis_b14' in kept and 'polcurve_b14' in kept)
+check_true('heavy plots dropped first', 'cleaning_cycles_a4' in dropped)
+
+kept, dropped = select_sidecars(SC, budget_bytes=0, exclude_buckets=set())
+check('zero budget keeps nothing', kept, {})
+check('zero budget drops all', len(dropped), 4)
+
+rec = {'schema': 2, 'metrics': {}}
+attach_sidecars(rec, {'polcurve_b14': SC['polcurve_b14']})
+check_true('attach adds sidecars', 'sidecars' in rec)
+check_true('attach adds bucket accounting', 'sidecar_bytes_by_bucket' in rec)
+check('attach round-trips', decode_sidecars(rec),
+      {'polcurve_b14': SC['polcurve_b14']})
+attach_sidecars(rec, {})
+check_true('attach with none clears', 'sidecars' not in rec)
+check_true('attach with none clears accounting',
+           'sidecar_bytes_by_bucket' not in rec)
 
 print("edge cases")
 tmp = tempfile.mkdtemp()

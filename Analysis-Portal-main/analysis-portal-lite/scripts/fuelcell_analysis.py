@@ -68,7 +68,69 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
 
         raise RuntimeError('\n'.join(parts))
 
-    return {"status": "success", "files_produced": output_files}
+    return {"status": "success", "files_produced": output_files,
+            "summary": _build_summary(info)}
+
+
+# Voltages at which polcurve current density is reported. Kept in step with
+# J_AT_V_TARGETS in the polcurve scripts.
+_J_AT_V_TARGETS = (0.7, 0.65, 0.6, 0.5, 0.4)
+
+# Scalar keys worth carrying per analysis bucket, mirroring what the standalone
+# scripts emit. Anything absent from a result dict is simply skipped.
+_SUMMARY_KEYS = {
+    'polcurve': ('OCV', 'V_at_1Acm2', 'peak_power_W_cm2', 'j_at_peak_power',
+                 'HFR_mean'),
+    'eis': ('HFR', 'R_ohm', 'R_ct', 'R_mt', 'R_squared', 'geo_area'),
+    'ecsa': ('average_ECSA_m2_per_g', 'average_ECSA_cm2', 'average_RF',
+             'anodic_ECSA_m2_per_g', 'anodic_RF', 'cathodic_ECSA_m2_per_g',
+             'cathodic_RF', 'ECSA_m2_per_g', 'ECSA_cm2', 'roughness_factor',
+             'Q_hupd_mC_cm2', 'Q_co_mC_cm2', 'loading_mg_cm2', 'geo_area'),
+    'crossover': ('j_xover_mA_cm2', 'J_H2_nmol_cm2_s', 'J_H2_mL_min_cm2',
+                  'K_H2_mol_cm_s_Pa', 'j_avg_mean_mA_cm2',
+                  'membrane_thickness_um', 'geo_area'),
+}
+
+
+def _build_summary(info):
+    """Flatten run_all's per-analysis results into tier 1 summary rows.
+
+    Full Analysis has its own orchestrator and never calls the standalone
+    scripts' run(), so the summary they emit does not apply here — it has to be
+    rebuilt from the result dicts run_all collected. Without this a Full
+    Analysis pushes a detail bin with no summary at all, and every index
+    key_value has to fall back to scraping plot annotations.
+    """
+    summary = []
+    if not isinstance(info, dict):
+        return summary
+    results = info.get('results') or {}
+
+    for bucket, keys in _SUMMARY_KEYS.items():
+        for r in (results.get(bucket) or []):
+            if not isinstance(r, dict):
+                continue
+            row = {'Label': r.get('label') or r.get('Label') or '',
+                   'Analysis': bucket}
+            for k in keys:
+                v = r.get(k)
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    row[k] = float(v)
+            if bucket == 'polcurve':
+                for tv in _J_AT_V_TARGETS:
+                    k = f'j_at_{tv:g}V'
+                    v = r.get(k)
+                    if isinstance(v, (int, float)):
+                        row[k] = float(v)
+                t = r.get('tafel')
+                if t:
+                    row['tafel_slope_mVdec'] = float(t['tafel_slope_mVdec'])
+                    row['j0_A_cm2'] = float(t['j0_A_cm2'])
+                    row['tafel_R_squared'] = float(t['R_squared'])
+            # Skip rows that carry nothing but their labels.
+            if len(row) > 2:
+                summary.append(row)
+    return summary
 
 # ═══════════════════════════════════════════════════════════════════════
 #  File Classification
@@ -876,6 +938,9 @@ def run_all(folder, save_dir, geo_area=5.0, loading=0.2,
         'errors': errors,
         'total': total,
         'unclassified': len(unclassified),
+        # Per-analysis result dicts, keyed by bucket. run() turns these into
+        # the tier 1 summary; nothing else consumes them.
+        'results': all_results,
     }
 
 
