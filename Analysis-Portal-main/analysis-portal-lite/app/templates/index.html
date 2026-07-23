@@ -2508,6 +2508,8 @@ function escapeAttr(s) { return escapeHtml(s); }
 const KV_UNITS = {
   'OCV': 'V', 'V @ 1 A/cm²': 'V', 'HFR': 'Ω·cm²',
   '|j_xover|': 'mA/cm²', 'Average ECSA': 'm²/g',
+  'j @ 0.7 V': 'A/cm²', 'j @ 0.65 V': 'A/cm²', 'j @ 0.6 V': 'A/cm²',
+  'j @ 0.5 V': 'A/cm²', 'j @ 0.4 V': 'A/cm²',
 };
 // Distinct hues legible on both dark and light backgrounds.
 const TREND_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6',
@@ -2518,7 +2520,9 @@ function availableMetrics(runs) {
   runs.forEach(r => (r.Data || []).forEach(d =>
     Object.keys(d.key_values || {}).forEach(k => set.add(k))));
   // Present whitelisted metrics in a stable, sensible order first.
-  const known = ['OCV', 'V @ 1 A/cm²', 'HFR', '|j_xover|', 'Average ECSA'];
+  const known = ['OCV', 'V @ 1 A/cm²',
+                 'j @ 0.7 V', 'j @ 0.65 V', 'j @ 0.6 V', 'j @ 0.5 V', 'j @ 0.4 V',
+                 'HFR', '|j_xover|', 'Average ECSA'];
   const ordered = known.filter(k => set.has(k));
   Array.from(set).sort().forEach(k => { if (!ordered.includes(k)) ordered.push(k); });
   return ordered;

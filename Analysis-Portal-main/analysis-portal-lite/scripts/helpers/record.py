@@ -370,6 +370,13 @@ KEY_VALUES: Dict[str, List[Tuple[str, List[str]]]] = {
     'polcurve': [
         ('OCV', ['OCV', 'OCV (V)']),
         ('V @ 1 A/cm²', ['V @ 1 A/cm²', 'V@1A (V)', 'V_at_1Acm2', 'V at 1 A/cm2']),
+        # Current density at fixed operating voltages. Sparse by design — a key
+        # is absent when the curve did not reach that voltage, never estimated.
+        ('j @ 0.7 V', ['j_at_0.7V', 'j @ 0.7 V']),
+        ('j @ 0.65 V', ['j_at_0.65V', 'j @ 0.65 V']),
+        ('j @ 0.6 V', ['j_at_0.6V', 'j @ 0.6 V']),
+        ('j @ 0.5 V', ['j_at_0.5V', 'j @ 0.5 V']),
+        ('j @ 0.4 V', ['j_at_0.4V', 'j @ 0.4 V']),
     ],
     'eis': [
         ('HFR', ['HFR', 'Mean HFR', 'HFR_mean', 'Mean HFR (mOhm·cm2)']),
@@ -389,6 +396,11 @@ KEY_VALUES: Dict[str, List[Tuple[str, List[str]]]] = {
 KEY_VALUE_UNITS = {
     'OCV': 'V',
     'V @ 1 A/cm²': 'V',
+    'j @ 0.7 V': 'A/cm²',
+    'j @ 0.65 V': 'A/cm²',
+    'j @ 0.6 V': 'A/cm²',
+    'j @ 0.5 V': 'A/cm²',
+    'j @ 0.4 V': 'A/cm²',
     'HFR': 'Ω·cm²',
     '|j_xover|': 'mA/cm²',
     'Average ECSA': 'm²/g',

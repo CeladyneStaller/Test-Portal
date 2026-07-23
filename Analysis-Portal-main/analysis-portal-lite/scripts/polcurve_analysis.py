@@ -129,6 +129,10 @@ def run(input_dir: str, output_dir: str, params: dict = None) -> dict:
             v = r.get(src)
             if v is not None:
                 row[dst] = float(v)
+        for _tv in J_AT_V_TARGETS:
+            _k = f'j_at_{_tv:g}V'
+            if _k in r:
+                row[_k] = float(r[_k])
         t = r.get('tafel')
         if t:
             row['tafel_slope_mVdec'] = float(t['tafel_slope_mVdec'])
@@ -1353,6 +1357,59 @@ def extract_tafel(j, V, j_min=0.01, j_max=0.1):
     }
 
 
+# Cell voltages at which current density is reported, in volts. These are
+# operating points of interest for fuel-cell performance, reported on the raw
+# measured curve rather than the iR-free one.
+J_AT_V_TARGETS = (0.7, 0.65, 0.6, 0.5, 0.4)
+
+# How far outside the measured voltage range a target may sit and still be
+# reported, by clamping to the nearest measured endpoint. A dwell held at a
+# 0.60 V setpoint averages to something like 0.60004 V, which would otherwise
+# put the 0.60 V target microvolts out of range and make the metric appear or
+# vanish on noise alone. At 5 mV this only ever rescues that boundary case —
+# setpoints are spaced 50 mV apart, so it cannot reach an unmeasured one.
+V_MATCH_TOL = 0.005
+
+
+def current_at_voltages(j, V, targets=J_AT_V_TARGETS):
+    """Interpolate current density at fixed cell voltages.
+
+    Returns {'j_at_0.65V': <A/cm2>, ...} for the targets the curve actually
+    spans. Targets outside the measured voltage range are omitted rather than
+    extrapolated: a curve that stops at 0.5 V has no defined current density at
+    0.4 V, and inventing one would put a fabricated number into a reported
+    metric. A missing key therefore means "not measured", never "estimated".
+    Targets within V_MATCH_TOL of an endpoint are clamped to it rather than
+    dropped, so sub-millivolt dwell noise cannot decide whether a metric exists.
+
+    Interpolation is linear in j against V. Voltage setpoints are typically
+    spaced 0.05 V apart and the targets usually land on them exactly, so this
+    is normally an exact lookup rather than a true interpolation.
+    """
+    out = {}
+    j = np.asarray(j, dtype=float)
+    V = np.asarray(V, dtype=float)
+    if j.size < 2 or V.size != j.size:
+        return out
+    # np.interp needs ascending x; V descends as j rises on a polcurve.
+    order = np.argsort(V)
+    Vs, js = V[order], j[order]
+    v_lo, v_hi = float(Vs[0]), float(Vs[-1])
+    for tv in targets:
+        t = tv
+        if tv < v_lo:
+            if v_lo - tv > V_MATCH_TOL:
+                continue            # genuinely below the measured curve
+            t = v_lo                # boundary noise; use the measured endpoint
+        elif tv > v_hi:
+            if tv - v_hi > V_MATCH_TOL:
+                continue
+            t = v_hi
+        # Key is the nominal target, not the clamped lookup point.
+        out[f'j_at_{tv:g}V'] = float(np.interp(t, Vs, js))
+    return out
+
+
 def analyze_polcurve(j, V, HFR=None, geo_area=5.0,
                      tafel_j_min=0.01, tafel_j_max=0.10):
     """
@@ -1387,6 +1444,9 @@ def analyze_polcurve(j, V, HFR=None, geo_area=5.0,
         'j_at_peak_power': j[np.argmax(P)],
         'OCV': V[0] if j[0] < 0.01 else np.interp(0, j, V),
     }
+
+    # Current density at fixed cell voltages (raw measured V, not iR-free).
+    results.update(current_at_voltages(j, V))
 
     # HFR and iR-free voltage
     if HFR is not None:
