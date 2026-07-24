@@ -72,14 +72,15 @@ def _entry_analyses(entry: Dict[str, Any]) -> List[str]:
 def list_runs(*, sample: Optional[str] = None,
               script: Optional[str] = None,
               analysis: Optional[str] = None,
+              stand: Optional[str] = None,
               since: Optional[str] = None,
               until: Optional[str] = None,
               limit: Optional[int] = None,
               force: bool = False) -> Dict[str, Any]:
     """Return index entries, newest first, optionally filtered.
 
-    Filters are the initial set agreed in scope: sample name substring, script,
-    analysis type, and an ISO date range. Condition filtering is deferred.
+    Filters: sample name substring, script, analysis type, test stand, and an
+    ISO date range. Condition filtering is deferred.
 
     Timestamps are ISO-8601 Z strings, so lexicographic comparison is also
     chronological and no parsing is needed.
@@ -95,6 +96,8 @@ def list_runs(*, sample: Optional[str] = None,
         runs = [r for r in runs if r.get('script') == script]
     if analysis:
         runs = [r for r in runs if analysis in _entry_analyses(r)]
+    if stand:
+        runs = [r for r in runs if r.get('stand') == stand]
     if since:
         runs = [r for r in runs if str(r.get('timestamp', '')) >= since]
     if until:
@@ -126,17 +129,20 @@ def index_facets(index: Optional[Dict[str, Any]] = None) -> Dict[str, List[str]]
     if index is None:
         index = fetch_index()
     runs = index.get('runs', [])
-    samples, scripts, analyses = set(), set(), set()
+    samples, scripts, analyses, stands = set(), set(), set(), set()
     for r in runs:
         if r.get('sample_name'):
             samples.add(r['sample_name'])
         if r.get('script'):
             scripts.add(r['script'])
+        if r.get('stand'):
+            stands.add(r['stand'])
         analyses.update(_entry_analyses(r))
     return {
         'samples': sorted(samples),
         'scripts': sorted(scripts),
         'analyses': sorted(analyses),
+        'stands': sorted(stands),
     }
 
 

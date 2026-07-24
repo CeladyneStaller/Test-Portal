@@ -303,14 +303,15 @@ async def list_scripts():
 
 @app.get("/api/view/runs")
 async def view_runs(sample: str = Query(None), script: str = Query(None),
-                    analysis: str = Query(None), since: str = Query(None),
-                    until: str = Query(None), limit: int = Query(None)):
+                    analysis: str = Query(None), stand: str = Query(None),
+                    since: str = Query(None), until: str = Query(None),
+                    limit: int = Query(None)):
     """Filtered list of historical runs from the index bin."""
     from scripts.helpers import viewstore
     try:
         return viewstore.list_runs(sample=sample, script=script,
-                                   analysis=analysis, since=since,
-                                   until=until, limit=limit)
+                                   analysis=analysis, stand=stand,
+                                   since=since, until=until, limit=limit)
     except Exception as e:
         raise HTTPException(502, f"could not read index: {e}")
 

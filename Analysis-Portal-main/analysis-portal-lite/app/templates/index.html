@@ -1808,6 +1808,12 @@
             </select>
           </div>
           <div class="field field-narrow">
+            <label class="field-label">Stand</label>
+            <select id="vf-stand" onchange="applyViewFilters()">
+              <option value="">All stands</option>
+            </select>
+          </div>
+          <div class="field field-narrow">
             <label class="field-label">From</label>
             <input type="date" id="vf-since" onchange="applyViewFilters()">
           </div>
@@ -1959,7 +1965,7 @@ _updateThemeButton(_getThemeMode());
 // ── View tab ────────────────────────────────────
 let _viewRuns = [];        // full index list, most recent first
 let _viewLoaded = false;   // fetched at least once this session
-let _viewFacets = { samples: [], scripts: [], analyses: [] };
+let _viewFacets = { samples: [], scripts: [], analyses: [], stands: [] };
 
 function switchTab(name) {
   document.getElementById('tab-analysis').classList.toggle('active', name === 'analysis');
@@ -1992,7 +1998,13 @@ async function loadViewRuns(force) {
 function populateViewFacets() {
   const scriptSel = document.getElementById('vf-script');
   const analysisSel = document.getElementById('vf-analysis');
+  const standSel = document.getElementById('vf-stand');
   const keepS = scriptSel.value, keepA = analysisSel.value;
+  const keepT = standSel.value;
+  standSel.innerHTML = '<option value="">All stands</option>'
+    + (_viewFacets.stands || []).map(t =>
+        `<option value="${escapeAttr(t)}">${escapeHtml(t)}</option>`).join('');
+  standSel.value = keepT;
   scriptSel.innerHTML = '<option value="">All scripts</option>'
     + _viewFacets.scripts.map(s =>
         `<option value="${escapeAttr(s)}">${escapeHtml(s)}</option>`).join('');
@@ -2008,13 +2020,17 @@ function applyViewFilters() {
   const sample = document.getElementById('vf-sample').value.trim().toLowerCase();
   const script = document.getElementById('vf-script').value;
   const analysis = document.getElementById('vf-analysis').value;
+  const stand = document.getElementById('vf-stand').value;
   const since = document.getElementById('vf-since').value;   // yyyy-mm-dd or ''
   const until = document.getElementById('vf-until').value;
 
   const rows = _viewRuns.filter(r => {
     if (sample && !String(r.sample_name || '').toLowerCase().includes(sample)) return false;
     if (script && r.script !== script) return false;
-    if (analysis && !runAnalyses(r).includes(analysis)) return false;
+    if (stand && r.stand !== stand) return false;
+    // Unfiltered analysis list — a row qualifies on what it actually holds,
+    // not on the narrowed view shown in the table.
+    if (analysis && !allRunAnalyses(r).includes(analysis)) return false;
     // timestamps are ISO Z, so a plain string prefix compare works by date
     if (since && String(r.timestamp || '') < since) return false;
     if (until && String(r.timestamp || '') > until + 'T99') return false;
@@ -2031,10 +2047,27 @@ function applyViewFilters() {
   updateTrend();
 }
 
-function runAnalyses(run) {
+// Everything a run contains, regardless of the active filter. Used to decide
+// whether a row qualifies.
+function allRunAnalyses(run) {
   const set = new Set();
   (run.Data || []).forEach(d => { if (d.Analysis) set.add(d.Analysis); });
   return Array.from(set).sort();
+}
+
+// The analysis currently being filtered on, or '' for all.
+function activeAnalysis() {
+  const el = document.getElementById('vf-analysis');
+  return el ? el.value : '';
+}
+
+// What a row should display. With an analysis filter active, every sample
+// holding that analysis is listed but shows only that analysis — so the table
+// reads as a comparison of one measurement across samples.
+function runAnalyses(run) {
+  const only = activeAnalysis();
+  const all = allRunAnalyses(run);
+  return only ? all.filter(a => a === only) : all;
 }
 
 // The experiment date, from the sample-name prefix. Absent when the sample name
@@ -2066,9 +2099,12 @@ function runKey(r) { return r.bin_id || r.job_id || r.sample_name || ''; }
 
 
 function runKeyValues(run) {
-  // Flatten the whitelisted key_values across a run's analysis units.
+  // Flatten the whitelisted key_values across a run's analysis units, scoped
+  // to the filtered analysis when one is active.
+  const only = activeAnalysis();
   const kv = {};
   (run.Data || []).forEach(d => {
+    if (only && d.Analysis !== only) return;
     Object.entries(d.key_values || {}).forEach(([k, v]) => {
       if (!(k in kv)) kv[k] = v;
     });
@@ -2152,7 +2188,7 @@ async function openRunDetail(jobId) {
     })();
     if (_openDetailJob !== jobId) return;  // collapsed while loading
     dr.querySelector('.run-detail').outerHTML = renderRunDetail(detail, jobId);
-    hydrateThumbs(jobId);
+    hydrateThumbs(jobId);   // no-op while every section is collapsed
   } catch (e) {
     const el = dr.querySelector('.run-detail');
     if (el) el.textContent = 'Could not load details: ' + (e.message || e);
@@ -2160,8 +2196,10 @@ async function openRunDetail(jobId) {
 }
 
 function renderRunDetail(detail, key) {
-  const plots = detail.plots || [];
-  // Group plots by analysis bucket.
+  // With an analysis filter active, show only that analysis — the row was
+  // listed because it holds it, so the detail should not reintroduce the rest.
+  const only = activeAnalysis();
+  const plots = (detail.plots || []).filter(p => !only || p.analysis === only);
   const byBucket = {};
   plots.forEach(p => { (byBucket[p.analysis] = byBucket[p.analysis] || []).push(p); });
 
@@ -2174,7 +2212,7 @@ function renderRunDetail(detail, key) {
   // renderable plot in the whole sample (mirrors the Jobs tab's batch select).
   html += `<div class="rd-toolbar">
     <button class="rd-tool-btn" onclick="toggleAllRdAnalyses('${escapeAttr(jobId)}')"
-            data-job="${escapeAttr(jobId)}">Collapse all</button>`;
+            data-job="${escapeAttr(jobId)}">Expand all</button>`;
   if (allRenderable.length) {
     html += `<button class="rd-tool-btn rd-selall"
                      onclick="selectAllRdPlots('${escapeAttr(jobId)}', ${plotsAttr(allRenderable)})"
@@ -2190,9 +2228,10 @@ function renderRunDetail(detail, key) {
     const bodyHtml = bucketPlots.map(p =>
       rdPlotRow(detail, p, anyRenderable, jobId)).join('');
 
-    // Every analysis is collapsible now. Buckets with plots start open;
-    // buckets with no stored plot data start collapsed.
-    const openClass = anyRenderable ? ' open' : '';
+    // Everything starts collapsed: a Full Analysis expands to a couple of
+    // dozen plots, and opening a sample should show its shape first rather
+    // than a wall of thumbnails. Use the toolbar or a header to expand.
+    const openClass = '';
     const note = anyRenderable ? ''
       : `<span class="rd-nostore-note">Plot data not stored — expand for key values only</span>`;
     // Per-type "select all" for this analysis, when it has renderable plots.
@@ -2286,6 +2325,8 @@ function rdPlotRow(detail, p, bucketHasPlots, key) {
 
 function toggleRdAnalysis(headEl) {
   headEl.parentElement.classList.toggle('open');
+  const dr = headEl.closest('tr.detail-row');
+  if (dr) hydrateThumbs(dr.dataset.job);
 }
 
 // Collapse or expand every analysis section in a run's detail. Toggles based on
@@ -2298,6 +2339,7 @@ function toggleAllRdAnalyses(jobId) {
   sections.forEach(s => s.classList.toggle('open', !anyOpen));
   const btn = dr.querySelector(`.rd-tool-btn[data-job="${cssEscape(jobId)}"]`);
   if (btn) btn.textContent = anyOpen ? 'Expand all' : 'Collapse all';
+  if (!anyOpen) hydrateThumbs(jobId);
 }
 
 // Select (or deselect) every renderable plot in a scope — the whole run, or one
@@ -2327,7 +2369,9 @@ function selectAllRdPlots(jobId, plotsEncoded) {
 async function hydrateThumbs(jobId) {
   const dr = document.querySelector(`tr.detail-row[data-job="${cssEscape(jobId)}"]`);
   if (!dr) return;
-  const thumbs = dr.querySelectorAll('.rd-thumb[data-plot]');
+  // Only visible sections: rendering is a server-side matplotlib call per plot,
+  // so a collapsed section must not trigger one.
+  const thumbs = dr.querySelectorAll('.rd-analysis.open .rd-thumb[data-plot]');
   for (const el of thumbs) {
     const plot = el.dataset.plot;
     const key = jobId + '::' + plot;

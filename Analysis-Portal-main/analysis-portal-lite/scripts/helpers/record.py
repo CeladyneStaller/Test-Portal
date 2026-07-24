@@ -352,6 +352,28 @@ def parse_run_date(sample_name: Optional[str]) -> Optional[str]:
         return None          # e.g. month 34 — a number, but not a date
 
 
+# Test stand, derived from the data format rather than plumbed through every
+# analysis script. This mirrors the auto-detection in fuelcell_analysis exactly:
+# an .fcd anywhere means Scribner, otherwise delimited text means FCTS. It
+# reflects the file format, so a run whose stand parameter was overridden by
+# hand could disagree — in practice the format and the stand go together.
+_SCRIBNER_EXT = {'.fcd'}
+_FCTS_EXT = {'.csv', '.txt', '.tsv'}
+
+
+def parse_stand(input_files: Optional[List[str]]) -> Optional[str]:
+    """'Scribner', 'FCTS', or None when the files say nothing useful."""
+    exts = {os.path.splitext(str(f))[1].lower() for f in (input_files or [])}
+    exts = {e for e in exts if e}
+    if not exts:
+        return None
+    if exts & _SCRIBNER_EXT:
+        return 'Scribner'
+    if exts <= _FCTS_EXT:
+        return 'FCTS'
+    return None
+
+
 def _strip_extension(basename: str) -> str:
     return _EXT_RE.sub('', basename)
 
@@ -825,6 +847,9 @@ def build_index_entry(detail_record: Dict[str, Any], bin_id: str) -> Dict[str, A
     run_date = parse_run_date(detail_record.get('sample_name'))
     if run_date:
         entry['run_date'] = run_date
+    stand = parse_stand(detail_record.get('input_files'))
+    if stand:
+        entry['stand'] = stand
     return entry
 
 
@@ -1035,4 +1060,9 @@ def merge_index_entry(existing: Optional[Dict[str, Any]],
         merged['run_date'] = run_date
     else:
         merged.pop('run_date', None)
+    stand = incoming.get('stand') or merged.get('stand')
+    if stand:
+        merged['stand'] = stand
+    else:
+        merged.pop('stand', None)
     return merged
